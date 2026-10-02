@@ -1,13 +1,4 @@
-Planner Android 1.2.3+14
-
-Key changes:
-- Explicit Persian calendar physical order: Saturday far right -> Friday far left.
-- Widget provider + pin diagnostics + final APK widget verification.
-- Task and event creation retained on Today/AppBar/FAB/widget deep links.
-- Workspace retained.
-- Android Keystore AES-GCM secure session token storage.
-- No plaintext widget token preference.
-- HTTPS-only production networking and cleartext blocked in Android manifest.
-- Android backup disabled.
-- Visible in-app version marker: 1.2.3+14.
-- CI build proof artifact with APK SHA256, certificate, manifest and version.
+Planner Android 1.3.0+15
+Widgets: overview, clock/date, tasks, agenda
+Workspace: collaborative autosave + server merge support
+Security: Android Keystore AES-GCM, HTTPS only, backup disabled

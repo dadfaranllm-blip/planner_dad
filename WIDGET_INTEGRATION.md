@@ -1,15 +1,11 @@
-# Planner Android Widget 1.2.0
+# Planner Android Widgets 1.3.0
 
-The Android build generates a native Home Screen AppWidget named **Planner**.
+The build generates four native AppWidget providers:
+- `PlannerWidgetProvider` — overview
+- `PlannerClockWidgetProvider` — large live clock + Persian date
+- `PlannerTasksWidgetProvider` — upcoming tasks
+- `PlannerAgendaWidgetProvider` — upcoming events
 
-It includes:
-- Persian date and clock
-- open task/event counters
-- next 3 tasks
-- next 2 events
-- Refresh button
-- + New task deep link
-- periodic 30-minute native refresh
-- independent API refresh using the authenticated token cached by the app
+All widgets are exposed in Android's widget picker with distinct labels and can also be pinned from **Settings → Home screen widgets**.
 
-The CI workflow fails if the provider, manifest receiver, layout, or widget metadata are missing.
+The clock uses Android `TextClock`, so the displayed time updates live without waiting for the 30-minute AppWidget refresh interval. Data widgets refresh cached/API data and use the securely stored session token from Android Keystore.

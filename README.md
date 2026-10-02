@@ -1,22 +1,31 @@
-# Planner Android 1.2.3 Secure
+# Planner Android 1.3.0
 
-This is the complete Android repository package.
+Version: **1.3.0+15**
 
-## Important
-Do not upload the ZIP itself into the repository. Extract it first and replace the repository contents with the extracted files. Use only `.github/workflows/android-build.yml`; its visible Actions name is `Planner Android Build 1.2.3 Secure`.
+## Main changes
+- New professional Settings screen.
+- Widget management moved to Settings.
+- Four native Android home-screen widgets:
+  1. Planner Overview
+  2. Large Clock & Persian Date
+  3. Upcoming Tasks
+  4. Agenda / Upcoming Events
+- Each widget has its own AppWidgetProvider and can be pinned independently.
+- Persian calendar is explicitly RTL: Saturday at the far right through Friday at the far left.
+- Workspace document collaboration upgraded:
+  - 700ms autosave debounce
+  - remote revision polling every 2 seconds
+  - non-overlapping concurrent edits are merged by the backend
+  - overlapping edits show a conflict resolver instead of losing either user's text
+- App security hardening:
+  - login token encrypted with AES-GCM using Android Keystore
+  - token is no longer stored as plaintext in Flutter SharedPreferences
+  - cleartext HTTP disabled
+  - Android app backup disabled
+- UI refresh: professional dashboard hero, card system, spacing, settings previews and clearer collaborative sync state.
 
-## What must be visible after installing the correct APK
-- Today page shows `نسخه 1.2.3+14 • Secure Token Storage`.
-- Persian calendar has Saturday on the far right and Friday on the far left.
-- Today page has `کار جدید` and `رویداد جدید`.
-- Workspace is present in bottom navigation.
-- Today page has `افزودن ویجت Planner به صفحه اصلی`.
+## Server requirement
+Collaborative merge requires the companion `planner-server-collaboration-1.3.0.zip` backend update.
 
-## Build artifacts
-- `Planner-Android-APK-1.2.3-Secure`
-- `Planner-Android-AAB-1.2.3-Secure`
-- `Planner-Build-Proof-1.2.3`
-
-The proof artifact contains the final merged Android manifest, APK SHA256 and signing certificate details. The workflow fails if the final APK does not contain version 1.2.3 / code 14, PlannerWidgetProvider, cleartext blocking and backup blocking.
-
-See `SECURITY.md` for security notes.
+## GitHub Actions
+Use `.github/workflows/android-build.yml` (Planner Android Build 1.3.0). It verifies all four widget providers, Keystore integration and the final APK manifest.

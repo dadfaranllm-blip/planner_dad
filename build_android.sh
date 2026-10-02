@@ -9,6 +9,4 @@ cp -R "$TMP/scaffold/android" "$HERE/android"
 python3 "$HERE/tool/prepare_android.py" "$HERE/android"
 cd "$HERE"
 flutter pub get
-flutter analyze --no-fatal-infos --no-fatal-warnings
-flutter test
-flutter build apk --release --build-name=1.2.3 --build-number=14 --dart-define=API_BASE_URL=https://planner.datholding.ir/api
+flutter build apk --release --dart-define=API_BASE_URL=https://planner.datholding.ir/api

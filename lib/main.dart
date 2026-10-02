@@ -14,7 +14,21 @@ const apiBase = String.fromEnvironment(
 );
 const widgetChannel = MethodChannel('planner/widget');
 const securityChannel = MethodChannel('planner/security');
-const appVersionLabel = '1.2.3+14';
+const appVersion = '1.3.0';
+const appBuild = '15';
+
+class SecureSession {
+  static Future<String?> get token async =>
+      securityChannel.invokeMethod<String>('getToken');
+
+  static Future<void> setToken(String token) async {
+    await securityChannel.invokeMethod('setToken', {'token': token});
+  }
+
+  static Future<void> clear() async {
+    await securityChannel.invokeMethod('clearToken');
+  }
+}
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,35 +36,7 @@ void main() {
 }
 
 class Api {
-  static const _timeout = Duration(seconds: 20);
-
-  static Future<String?> token() async {
-    final value = await securityChannel.invokeMethod<String>('getToken');
-    final clean = value?.trim();
-    return (clean == null || clean.isEmpty) ? null : clean;
-  }
-
-  static Future<void> saveToken(String token) async {
-    if (token.trim().isEmpty) throw ArgumentError('Empty token');
-    await securityChannel.invokeMethod('setToken', {'token': token});
-  }
-
-  static Future<void> clearToken() async {
-    await securityChannel.invokeMethod('clearToken');
-  }
-
-  static Uri _endpoint(String path) {
-    final base = Uri.parse(apiBase);
-    const allowInsecure = bool.fromEnvironment('ALLOW_INSECURE_HTTP', defaultValue: false);
-    final local = base.host == 'localhost' || base.host == '127.0.0.1';
-    if (base.scheme != 'https' && !(allowInsecure && local)) {
-      throw StateError('Insecure API endpoint blocked');
-    }
-    if (!allowInsecure && base.host != 'planner.datholding.ir') {
-      throw StateError('Untrusted API host blocked');
-    }
-    return Uri.parse('$apiBase$path');
-  }
+  static Future<String?> token() => SecureSession.token;
 
   static Future<dynamic> call(
     String path, {
@@ -59,16 +45,14 @@ class Api {
     bool auth = true,
   }) async {
     final t = await token();
-    final r = http.Request(method, _endpoint(path));
-    r.followRedirects = false;
-    r.headers['Accept'] = 'application/json';
-    r.headers['Content-Type'] = 'application/json; charset=utf-8';
+    final r = http.Request(method, Uri.parse('$apiBase$path'));
+    r.headers['Content-Type'] = 'application/json';
     if (auth && t != null) r.headers['Authorization'] = 'Bearer $t';
     if (body != null) r.body = jsonEncode(body);
-    final response = await r.send().timeout(_timeout);
-    final txt = await response.stream.bytesToString().timeout(_timeout);
-    if (response.statusCode >= 300) {
-      var message = 'خطای ارتباط با سرور (${response.statusCode})';
+    final s = await r.send();
+    final txt = await s.stream.bytesToString();
+    if (s.statusCode >= 400) {
+      var message = txt;
       try {
         final decoded = jsonDecode(txt);
         if (decoded is Map && decoded['detail'] != null) {
@@ -118,11 +102,63 @@ class PlannerApp extends StatelessWidget {
       locale: const Locale('fa', 'IR'),
       theme: ThemeData(
         useMaterial3: true,
-        colorSchemeSeed: const Color(0xff176b43),
-        scaffoldBackgroundColor: const Color(0xfff7f8f7),
-        inputDecorationTheme: const InputDecorationTheme(
-          border: OutlineInputBorder(),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xff176b43),
+          brightness: Brightness.light,
+          surface: const Color(0xfffbfcfb),
         ),
+        scaffoldBackgroundColor: const Color(0xfff3f6f4),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xfff3f6f4),
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          centerTitle: false,
+          titleTextStyle: TextStyle(
+            color: Color(0xff183229),
+            fontSize: 20,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        cardTheme: CardThemeData(
+          elevation: 0,
+          color: Colors.white,
+          margin: EdgeInsets.zero,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.all(Radius.circular(20)),
+            side: BorderSide(color: Color(0xffe0e8e3)),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+            borderSide: BorderSide(color: Color(0xffd7e1da)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(16)),
+            borderSide: BorderSide(color: Color(0xffd7e1da)),
+          ),
+          contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        ),
+        navigationBarTheme: const NavigationBarThemeData(
+          height: 68,
+          elevation: 0,
+          backgroundColor: Colors.white,
+          indicatorColor: Color(0xffdcefe3),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.all(Radius.circular(14)),
+            ),
+            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+          ),
+        ),
+      ),
+      builder: (context, child) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: child ?? const SizedBox.shrink(),
       ),
       home: const Gate(),
     );
@@ -149,15 +185,15 @@ class _GateState extends State<Gate> {
   }
 
   Future<void> _readToken() async {
-    final token = await Api.token();
-    if (mounted) setState(() => has = token != null);
+    final t = await SecureSession.token;
+    if (mounted) setState(() => has = t != null && t.isNotEmpty);
   }
 
   Future<void> _handleLink(Uri uri) async {
     if (uri.scheme != 'planner') return;
     final token = uri.queryParameters['oauth_token'];
     if (token == null || token.isEmpty) return;
-    await Api.saveToken(token);
+    await SecureSession.setToken(token);
     if (mounted) setState(() => has = true);
   }
 
@@ -202,7 +238,7 @@ class _LoginState extends State<Login> {
         auth: false,
         body: {'email': email.text.trim(), 'password': pass.text},
       );
-      await Api.saveToken(r['access_token']);
+      await SecureSession.setToken(r['access_token']);
       widget.onLogin();
     } catch (_) {
       if (mounted) setState(() => err = 'ورود انجام نشد');
@@ -222,7 +258,6 @@ class _LoginState extends State<Login> {
         auth: false,
       );
       final url = Uri.parse(r['authorization_url']);
-      if (url.scheme != 'https') throw Exception('آدرس ورود امن نیست');
       if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
         throw Exception('مرورگر باز نشد');
       }
@@ -539,26 +574,21 @@ class _HomeState extends State<Home> {
 
   Future<void> pinWidget() async {
     try {
-      final status = await widgetChannel.invokeMapMethod<String, dynamic>('widgetStatus') ?? {};
       final ok = await widgetChannel.invokeMethod<bool>('pinWidget') ?? false;
       if (!mounted) return;
-      final registered = status['registered'] == true;
-      final pinSupported = status['pinSupported'] == true;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
             ok
-                ? 'درخواست افزودن ویجت Planner ارسال شد.'
-                : registered
-                    ? 'ویجت داخل APK ثبت است؛ افزودن مستقیم توسط لانچر پشتیبانی نمی‌شود: $pinSupported'
-                    : 'Provider ویجت در این APK ثبت نشده است. نسخه نصب‌شده: $appVersionLabel',
+                ? 'درخواست افزودن ویجت به صفحه اصلی ارسال شد.'
+                : 'لانچر این گوشی افزودن مستقیم ویجت را پشتیبانی نمی‌کند. از بخش Widgets گوشی، Planner را بررسی کنید.',
           ),
         ),
       );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('افزودن ویجت انجام نشد. نسخه $appVersionLabel')),
+        SnackBar(content: Text('افزودن ویجت انجام نشد: $e')),
       );
     }
   }
@@ -775,7 +805,7 @@ class _HomeState extends State<Home> {
     final openTasks = tasks.where((x) => x['status'] != 'completed').toList();
     final openEvents = events.where((x) => x['status'] != 'completed').toList();
     final pages = [
-      Today(tasks: openTasks, events: openEvents, onAct: act, onAdd: add, onPinWidget: pinWidget),
+      Today(tasks: openTasks, events: openEvents, onAct: act, onAdd: add),
       ItemsPage(title: 'کارها', kind: 'task', items: openTasks, onAct: act),
       ItemsPage(title: 'رویدادها', kind: 'event', items: openEvents, onAct: act),
       CalendarPage(tasks: openTasks, events: openEvents, onAct: act),
@@ -792,18 +822,23 @@ class _HomeState extends State<Home> {
               onPressed: showCreateMenu,
               icon: const Icon(Icons.add_circle_outline),
             ),
-          IconButton(onPressed: load, icon: const Icon(Icons.refresh_rounded)),
+          IconButton(onPressed: load, tooltip: 'بروزرسانی', icon: const Icon(Icons.refresh_rounded)),
           IconButton(
+            tooltip: 'تنظیمات',
             onPressed: () async {
-              await Api.clearToken();
-              if (!context.mounted) return;
-              Navigator.pushAndRemoveUntil(
+              final loggedOut = await Navigator.push<bool>(
                 context,
-                MaterialPageRoute(builder: (_) => const Gate()),
-                (_) => false,
+                MaterialPageRoute(builder: (_) => const SettingsPage()),
               );
+              if (loggedOut == true && context.mounted) {
+                Navigator.pushAndRemoveUntil(
+                  context,
+                  MaterialPageRoute(builder: (_) => const Gate()),
+                  (_) => false,
+                );
+              }
             },
-            icon: const Icon(Icons.logout),
+            icon: const Icon(Icons.settings_outlined),
           ),
         ],
       ),
@@ -847,14 +882,12 @@ class Today extends StatelessWidget {
   final List<dynamic> events;
   final ActionFn onAct;
   final Future<void> Function(String kind) onAdd;
-  final Future<void> Function() onPinWidget;
   const Today({
     super.key,
     required this.tasks,
     required this.events,
     required this.onAct,
     required this.onAdd,
-    required this.onPinWidget,
   });
 
   @override
@@ -867,11 +900,13 @@ class Today extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
+        DashboardHero(taskCount: tasks.length, eventCount: events.length),
+        const SizedBox(height: 14),
         Row(
           children: [
-            Expanded(child: Stat(title: 'کارهای باز', value: tasks.length)),
+            Expanded(child: Stat(title: 'کارهای باز', value: tasks.length, icon: Icons.check_circle_outline)),
             const SizedBox(width: 10),
-            Expanded(child: Stat(title: 'رویدادها', value: events.length)),
+            Expanded(child: Stat(title: 'رویدادها', value: events.length, icon: Icons.event_outlined)),
           ],
         ),
         const SizedBox(height: 12),
@@ -895,20 +930,6 @@ class Today extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 10),
-        OutlinedButton.icon(
-          onPressed: onPinWidget,
-          icon: const Icon(Icons.widgets_outlined),
-          label: const Text('افزودن ویجت Planner به صفحه اصلی'),
-        ),
-        const SizedBox(height: 6),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: Text(
-            'نسخه $appVersionLabel • Secure Token Storage',
-            textDirection: TextDirection.rtl,
-            style: const TextStyle(fontSize: 11, color: Colors.black54),
-          ),
-        ),
         const SizedBox(height: 18),
         const Text('برنامه‌های پیش رو', style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
@@ -925,23 +946,53 @@ class Today extends StatelessWidget {
   }
 }
 
+class DashboardHero extends StatelessWidget {
+  final int taskCount;
+  final int eventCount;
+  const DashboardHero({super.key, required this.taskCount, required this.eventCount});
+  @override
+  Widget build(BuildContext context) {
+    final j = Jalali.now();
+    final cs = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(begin: Alignment.topRight, end: Alignment.bottomLeft, colors: [cs.primary, const Color(0xff245b7a)]),
+        borderRadius: BorderRadius.circular(26),
+        boxShadow: const [BoxShadow(blurRadius: 24, offset: Offset(0, 10), color: Color(0x1f173c2b))],
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const Text('امروز', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        Text('${j.formatter.wN} ${j.formatter.d} ${j.formatter.mN} ${j.year}', style: const TextStyle(color: Colors.white, fontSize: 23, fontWeight: FontWeight.w900)),
+        const SizedBox(height: 14),
+        Text('$taskCount کار باز  •  $eventCount رویداد پیش‌رو', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+      ]),
+    );
+  }
+}
+
 class Stat extends StatelessWidget {
   final String title;
   final int value;
-  const Stat({super.key, required this.title, required this.value});
+  final IconData icon;
+  const Stat({super.key, required this.title, required this.value, required this.icon});
   @override
   Widget build(BuildContext context) => Card(
-        elevation: 0,
         child: Padding(
           padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title),
-              const SizedBox(height: 6),
-              Text('$value', style: const TextStyle(fontSize: 27, fontWeight: FontWeight.bold)),
-            ],
-          ),
+          child: Row(children: [
+            Container(
+              width: 42, height: 42,
+              decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer, borderRadius: BorderRadius.circular(14)),
+              child: Icon(icon, color: Theme.of(context).colorScheme.primary),
+            ),
+            const SizedBox(width: 11),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('$value', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+              Text(title, style: Theme.of(context).textTheme.bodySmall),
+            ])),
+          ]),
         ),
       );
 }
@@ -1067,18 +1118,14 @@ class _CalendarPageState extends State<CalendarPage> {
     final first = Jalali(year, month, 1).toGregorian().toDateTime();
     final offset = (first.weekday + 1) % 7;
     final length = Jalali(year, month).monthLength;
-    final rowCount = ((offset + length) / 7).ceil();
-
-    Widget calendarCell(int logicalIndex) {
-      final day = logicalIndex - offset + 1;
-      if (day < 1 || day > length) return const SizedBox(height: 46);
-      return Padding(
-        padding: const EdgeInsets.all(2.5),
-        child: InkWell(
+    final cells = <Widget>[
+      ...List.generate(offset, (_) => const SizedBox()),
+      ...List.generate(length, (i) {
+        final day = i + 1;
+        return InkWell(
           onTap: () => setState(() => selected = day),
           borderRadius: BorderRadius.circular(10),
           child: Container(
-            height: 46,
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10),
               color: selected == day ? const Color(0xffe7f4ec) : Colors.white,
@@ -1087,15 +1134,15 @@ class _CalendarPageState extends State<CalendarPage> {
             padding: const EdgeInsets.all(7),
             child: Stack(
               children: [
-                Align(alignment: Alignment.topRight, child: Text('$day')),
+                Text('$day'),
                 if (itemsFor(day).isNotEmpty)
-                  const Positioned(bottom: 1, right: 1, child: CircleAvatar(radius: 3)),
+                  const Positioned(bottom: 2, right: 2, child: CircleAvatar(radius: 3)),
               ],
             ),
           ),
-        ),
-      );
-    }
+        );
+      }),
+    ];
     final selectedItems = itemsFor(selected);
     return ListView(
       padding: const EdgeInsets.all(14),
@@ -1108,30 +1155,31 @@ class _CalendarPageState extends State<CalendarPage> {
             IconButton(onPressed: () => move(1), icon: const Icon(Icons.chevron_left)),
           ],
         ),
-        const Row(
-          textDirection: TextDirection.ltr,
-          children: [
-            Expanded(child: Center(child: Text('جمعه'))),
-            Expanded(child: Center(child: Text('پنج'))),
-            Expanded(child: Center(child: Text('چهار'))),
-            Expanded(child: Center(child: Text('سه'))),
-            Expanded(child: Center(child: Text('دو'))),
-            Expanded(child: Center(child: Text('یک'))),
-            Expanded(child: Center(child: Text('شنبه'))),
-          ],
+        const Directionality(
+          textDirection: TextDirection.rtl,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              Text('ش'),
+              Text('ی'),
+              Text('د'),
+              Text('س'),
+              Text('چ'),
+              Text('پ'),
+              Text('ج'),
+            ],
+          ),
         ),
         const SizedBox(height: 8),
-        Table(
-          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
-          children: List.generate(
-            rowCount,
-            (row) => TableRow(
-              // Explicit physical column order: Friday at far left, Saturday at far right.
-              children: List.generate(
-                7,
-                (displayColumn) => calendarCell(row * 7 + (6 - displayColumn)),
-              ),
-            ),
+        Directionality(
+          textDirection: TextDirection.rtl,
+          child: GridView.count(
+            crossAxisCount: 7,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 5,
+            crossAxisSpacing: 5,
+            children: cells,
           ),
         ),
         const SizedBox(height: 18),
@@ -1562,42 +1610,212 @@ class WorkspaceDocumentPage extends StatefulWidget {
 class _WorkspaceDocumentPageState extends State<WorkspaceDocumentPage> {
   late final TextEditingController content;
   late int revision;
+  late String lastSyncedContent;
+  Timer? _pullTimer;
+  Timer? _saveTimer;
   bool saving = false;
+  bool dirty = false;
+  bool applyingRemote = false;
+  String syncText = 'همگام';
 
   @override
   void initState() {
     super.initState();
-    content = TextEditingController(text: widget.document['content'] ?? '');
+    lastSyncedContent = widget.document['content'] ?? '';
+    content = TextEditingController(text: lastSyncedContent);
     revision = widget.document['revision'] ?? 0;
+    content.addListener(_onLocalChanged);
+    _pullTimer = Timer.periodic(const Duration(seconds: 2), (_) => _pullRemote());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _pullRemote());
   }
 
-  @override
-  void dispose() { content.dispose(); super.dispose(); }
+  void _onLocalChanged() {
+    if (applyingRemote) return;
+    dirty = content.text != lastSyncedContent;
+    if (mounted) setState(() => syncText = dirty ? 'در انتظار همگام‌سازی…' : 'همگام');
+    _saveTimer?.cancel();
+    if (dirty) {
+      _saveTimer = Timer(const Duration(milliseconds: 700), () => save(silent: true));
+    }
+  }
 
-  Future<void> save() async {
-    setState(() => saving = true);
+  void _applyText(String value) {
+    if (content.text == value) return;
+    applyingRemote = true;
+    final oldSelection = content.selection;
+    content.text = value;
+    final offset = oldSelection.baseOffset < 0
+        ? 0
+        : (oldSelection.baseOffset > value.length ? value.length : oldSelection.baseOffset);
+    content.selection = TextSelection.collapsed(offset: offset);
+    applyingRemote = false;
+  }
+
+  Future<void> _pullRemote() async {
+    if (!mounted || saving) return;
     try {
-      final r = await Api.call('/documents/${widget.document['id']}', method: 'PUT', body: {'content': content.text, 'base_revision': revision});
+      final r = await Api.call('/documents/${widget.document['id']}');
+      final remoteRevision = r['revision'] ?? revision;
+      final remoteContent = r['content'] ?? '';
+      if (remoteRevision <= revision) return;
+      if (!dirty) {
+        _applyText(remoteContent);
+        if (mounted) {
+          setState(() {
+            revision = remoteRevision;
+            lastSyncedContent = remoteContent;
+            syncText = 'تغییرات همکار دریافت شد';
+          });
+        }
+      } else if (mounted) {
+        setState(() => syncText = 'تغییر همکار موجود است؛ هنگام ذخیره ادغام می‌شود');
+      }
+    } catch (_) {
+      // Keep editing offline. Autosave retries on the next local change/manual save.
+    }
+  }
+
+  Future<void> _resolveConflict(String localText) async {
+    dynamic remote;
+    try {
+      remote = await Api.call('/documents/${widget.document['id']}');
+    } catch (_) {
+      if (mounted) setState(() => syncText = 'خطا در دریافت نسخه همکار');
+      return;
+    }
+    if (!mounted) return;
+    final remoteText = (remote['content'] ?? '').toString();
+    final remoteRevision = remote['revision'] ?? revision;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('تداخل در ویرایش مشترک'),
+        content: const Text(
+          'شما و یک عضو دیگر دقیقاً بخش مشترکی از متن را هم‌زمان تغییر داده‌اید. '
+          'برای جلوگیری از حذف اطلاعات، یکی از روش‌های زیر را انتخاب کنید.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialog, 'remote'), child: const Text('نسخه همکار')),
+          FilledButton(onPressed: () => Navigator.pop(dialog, 'manual'), child: const Text('ترکیب و ویرایش دستی')),
+        ],
+      ),
+    );
+    if (!mounted || choice == null) return;
+    revision = remoteRevision;
+    lastSyncedContent = remoteText;
+    if (choice == 'remote') {
+      _applyText(remoteText);
+      dirty = false;
+      setState(() => syncText = 'نسخه همکار بارگذاری شد');
+    } else {
+      final merged = 'نسخه من:\n$localText\n\n────────────\nنسخه همکار:\n$remoteText';
+      _applyText(merged);
+      dirty = true;
+      setState(() => syncText = 'برای ادغام نهایی متن را ویرایش و ذخیره کنید');
+    }
+  }
+
+  Future<void> save({bool silent = false}) async {
+    if (saving || !dirty) return;
+    _saveTimer?.cancel();
+    final localText = content.text;
+    final baseRevision = revision;
+    if (mounted) setState(() { saving = true; syncText = 'در حال همگام‌سازی…'; });
+    try {
+      final r = await Api.call(
+        '/documents/${widget.document['id']}',
+        method: 'PUT',
+        body: {'content': localText, 'base_revision': baseRevision},
+      );
+      final savedContent = (r['content'] ?? localText).toString();
       if (mounted) {
-        setState(() { revision = r['revision'] ?? revision + 1; saving = false; });
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('سند ذخیره شد')));
+        _applyText(savedContent);
+        setState(() {
+          revision = r['revision'] ?? revision + 1;
+          lastSyncedContent = savedContent;
+          dirty = false;
+          saving = false;
+          syncText = r['merged'] == true ? 'تغییرات شما و همکار ادغام شد' : 'همگام';
+        });
+        if (!silent) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('تغییرات همگام شد')));
+        }
       }
     } catch (e) {
-      if (mounted) { setState(() => saving = false); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('ذخیره انجام نشد؛ ممکن است عضو دیگری سند را تغییر داده باشد. $e'))); }
+      if (mounted) setState(() { saving = false; syncText = 'نیاز به بررسی تداخل'; });
+      if (e.toString().contains('conflict')) {
+        await _resolveConflict(localText);
+      } else if (!silent && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('ذخیره انجام نشد: $e')));
+      }
     }
   }
 
   @override
+  void dispose() {
+    _pullTimer?.cancel();
+    _saveTimer?.cancel();
+    content.removeListener(_onLocalChanged);
+    content.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(widget.document['title'] ?? 'سند مشترک'), actions: [IconButton(onPressed: saving ? null : save, icon: const Icon(Icons.save_outlined))]),
+    appBar: AppBar(
+      title: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.document['title'] ?? 'سند مشترک'),
+          Text('ویرایش مشارکتی • نسخه $revision', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500)),
+        ],
+      ),
+      actions: [
+        IconButton(onPressed: saving ? null : () => save(), tooltip: 'همگام‌سازی', icon: const Icon(Icons.cloud_done_outlined)),
+      ],
+    ),
     body: Padding(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.fromLTRB(14, 6, 14, 14),
       child: Column(children: [
-        Row(children: [const Icon(Icons.sync, size: 18), const SizedBox(width: 6), Text('نسخه $revision')]),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: const Color(0xffeef6f1),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(children: [
+            Icon(saving ? Icons.sync : Icons.people_alt_outlined, size: 18),
+            const SizedBox(width: 8),
+            Expanded(child: Text(syncText, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
+          ]),
+        ),
         const SizedBox(height: 10),
-        Expanded(child: TextField(controller: content, expands: true, maxLines: null, minLines: null, textAlignVertical: TextAlignVertical.top, decoration: const InputDecoration(hintText: 'محتوای مشترک را بنویسید…'))),
+        Expanded(
+          child: TextField(
+            controller: content,
+            expands: true,
+            maxLines: null,
+            minLines: null,
+            textAlignVertical: TextAlignVertical.top,
+            decoration: const InputDecoration(
+              hintText: 'محتوای مشترک را بنویسید…',
+              alignLabelWithHint: true,
+            ),
+          ),
+        ),
         const SizedBox(height: 10),
-        SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: saving ? null : save, icon: saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.save), label: const Text('ذخیره تغییرات'))),
+        Row(children: [
+          Expanded(
+            child: FilledButton.icon(
+              onPressed: saving || !dirty ? null : () => save(),
+              icon: saving
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.cloud_upload_outlined),
+              label: Text(saving ? 'در حال همگام‌سازی…' : dirty ? 'همگام‌سازی اکنون' : 'همگام است'),
+            ),
+          ),
+        ]),
       ]),
     ),
   );
@@ -1779,6 +1997,253 @@ class _MessagesPageState extends State<MessagesPage> {
       ],
     );
   }
+}
+
+
+class SettingsPage extends StatelessWidget {
+  const SettingsPage({super.key});
+
+  Future<void> _pin(BuildContext context, String type) async {
+    try {
+      final ok = await widgetChannel.invokeMethod<bool>('pinWidget', {'type': type}) ?? false;
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? 'درخواست افزودن ویجت ارسال شد.'
+                : 'لانچر افزودن مستقیم ویجت را پشتیبانی نمی‌کند؛ از فهرست Widgets گوشی، Planner را باز کنید.',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('افزودن ویجت انجام نشد: $e')));
+    }
+  }
+
+  Future<void> _logout(BuildContext context) async {
+    await SecureSession.clear();
+    if (context.mounted) Navigator.pop(context, true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return Scaffold(
+      appBar: AppBar(title: const Text('تنظیمات')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
+        children: [
+          Container(
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: [cs.primary, cs.primaryContainer]),
+              borderRadius: BorderRadius.circular(24),
+            ),
+            child: Row(children: [
+              CircleAvatar(
+                radius: 27,
+                backgroundColor: Colors.white.withValues(alpha: .9),
+                child: Icon(Icons.tune_rounded, color: cs.primary, size: 30),
+              ),
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Planner', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w900)),
+                    SizedBox(height: 3),
+                    Text('تنظیم تجربه کاربری، ویجت‌ها و امنیت', style: TextStyle(color: Colors.white70, fontSize: 12)),
+                  ],
+                ),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 22),
+          const _SettingsTitle(icon: Icons.widgets_outlined, title: 'ویجت‌های صفحه اصلی', subtitle: 'هر ویجت را جداگانه به Home Screen اضافه کنید'),
+          const SizedBox(height: 10),
+          WidgetOptionCard(
+            icon: Icons.dashboard_customize_outlined,
+            title: 'خلاصه Planner',
+            subtitle: 'تاریخ، تعداد کارها، ۳ کار بعدی و ۲ رویداد بعدی',
+            preview: const _OverviewWidgetPreview(),
+            onAdd: () => _pin(context, 'overview'),
+          ),
+          const SizedBox(height: 12),
+          WidgetOptionCard(
+            icon: Icons.schedule_rounded,
+            title: 'ساعت و تاریخ بزرگ',
+            subtitle: 'ساعت زنده بزرگ + تاریخ شمسی خوانا و مینیمال',
+            preview: const _ClockWidgetPreview(),
+            onAdd: () => _pin(context, 'clock'),
+          ),
+          const SizedBox(height: 12),
+          WidgetOptionCard(
+            icon: Icons.checklist_rounded,
+            title: 'کارهای بعدی',
+            subtitle: 'تمرکز روی کارهای باز و دسترسی سریع به کار جدید',
+            preview: const _TasksWidgetPreview(),
+            onAdd: () => _pin(context, 'tasks'),
+          ),
+          const SizedBox(height: 12),
+          WidgetOptionCard(
+            icon: Icons.event_note_rounded,
+            title: 'برنامه و رویدادها',
+            subtitle: 'رویدادهای پیش‌رو و دسترسی سریع به رویداد جدید',
+            preview: const _AgendaWidgetPreview(),
+            onAdd: () => _pin(context, 'agenda'),
+          ),
+          const SizedBox(height: 24),
+          const _SettingsTitle(icon: Icons.shield_outlined, title: 'امنیت', subtitle: 'وضعیت حفاظت حساب و ارتباط شبکه'),
+          const SizedBox(height: 10),
+          Card(
+            child: Column(children: [
+              const ListTile(
+                leading: Icon(Icons.lock_outline),
+                title: Text('ذخیره امن نشست'),
+                subtitle: Text('توکن ورود در Android Keystore رمزگذاری می‌شود'),
+                trailing: Icon(Icons.verified_rounded),
+              ),
+              const Divider(height: 1),
+              const ListTile(
+                leading: Icon(Icons.https_outlined),
+                title: Text('ارتباط HTTPS'),
+                subtitle: Text('ارتباط با API فقط روی HTTPS انجام می‌شود'),
+                trailing: Icon(Icons.verified_rounded),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.logout_rounded),
+                title: const Text('خروج امن از حساب'),
+                subtitle: const Text('توکن رمزگذاری‌شده از دستگاه حذف می‌شود'),
+                onTap: () => _logout(context),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 24),
+          const _SettingsTitle(icon: Icons.info_outline, title: 'درباره برنامه', subtitle: 'اطلاعات نسخه نصب‌شده'),
+          const SizedBox(height: 10),
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.event_note_rounded),
+              title: const Text('Planner'),
+              subtitle: const Text('نسخه $appVersion • Build $appBuild'),
+              trailing: const Text('Android'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsTitle extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  const _SettingsTitle({required this.icon, required this.title, required this.subtitle});
+  @override
+  Widget build(BuildContext context) => Row(children: [
+    Container(
+      width: 42,
+      height: 42,
+      decoration: BoxDecoration(color: Theme.of(context).colorScheme.primaryContainer, borderRadius: BorderRadius.circular(13)),
+      child: Icon(icon, color: Theme.of(context).colorScheme.primary),
+    ),
+    const SizedBox(width: 10),
+    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(title, style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
+      const SizedBox(height: 2),
+      Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+    ])),
+  ]);
+}
+
+class WidgetOptionCard extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Widget preview;
+  final VoidCallback onAdd;
+  const WidgetOptionCard({super.key, required this.icon, required this.title, required this.subtitle, required this.preview, required this.onAdd});
+
+  @override
+  Widget build(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(14),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          Icon(icon, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(width: 9),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+            Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+          ])),
+        ]),
+        const SizedBox(height: 12),
+        preview,
+        const SizedBox(height: 12),
+        FilledButton.tonalIcon(onPressed: onAdd, icon: const Icon(Icons.add_to_home_screen), label: const Text('افزودن به صفحه اصلی')),
+      ]),
+    ),
+  );
+}
+
+class _WidgetPreviewShell extends StatelessWidget {
+  final Widget child;
+  const _WidgetPreviewShell({required this.child});
+  @override
+  Widget build(BuildContext context) => Container(
+    height: 122,
+    padding: const EdgeInsets.all(14),
+    decoration: BoxDecoration(
+      color: const Color(0xffeef4f0),
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: const Color(0xffd7e2db)),
+    ),
+    child: child,
+  );
+}
+
+class _OverviewWidgetPreview extends StatelessWidget {
+  const _OverviewWidgetPreview();
+  @override
+  Widget build(BuildContext context) => _WidgetPreviewShell(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    const Row(children: [Expanded(child: Text('Planner', style: TextStyle(fontWeight: FontWeight.w900))), Text('10:42', style: TextStyle(fontWeight: FontWeight.w800))]),
+    const SizedBox(height: 5),
+    Text('${Jalali.now().formatter.wN} ${Jalali.now().formatter.d} ${Jalali.now().formatter.mN}', textAlign: TextAlign.right),
+    const Spacer(),
+    const Text('۳ کار باز  •  ۲ رویداد', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+  ]));
+}
+
+class _ClockWidgetPreview extends StatelessWidget {
+  const _ClockWidgetPreview();
+  @override
+  Widget build(BuildContext context) => _WidgetPreviewShell(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+    const Text('10:42', style: TextStyle(fontSize: 38, fontWeight: FontWeight.w900, height: .9)),
+    const SizedBox(height: 8),
+    Text('${Jalali.now().formatter.wN} ${Jalali.now().formatter.d} ${Jalali.now().formatter.mN} ${Jalali.now().year}', style: const TextStyle(fontWeight: FontWeight.w700)),
+  ]));
+}
+
+class _TasksWidgetPreview extends StatelessWidget {
+  const _TasksWidgetPreview();
+  @override
+  Widget build(BuildContext context) => const _WidgetPreviewShell(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    Text('کارهای بعدی', style: TextStyle(fontWeight: FontWeight.w900)), SizedBox(height: 8),
+    Text('• ارسال گزارش کارشناسی', maxLines: 1), Text('• تماس با موکل', maxLines: 1), Text('• بررسی مستندات', maxLines: 1),
+  ]));
+}
+
+class _AgendaWidgetPreview extends StatelessWidget {
+  const _AgendaWidgetPreview();
+  @override
+  Widget build(BuildContext context) => const _WidgetPreviewShell(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+    Text('برنامه پیش‌رو', style: TextStyle(fontWeight: FontWeight.w900)), SizedBox(height: 8),
+    Text('09:30  جلسه', maxLines: 1), Text('14:00  پیگیری پرونده', maxLines: 1), Text('18:30  یادآوری', maxLines: 1),
+  ]));
 }
 
 class Empty extends StatelessWidget {
