@@ -32,10 +32,12 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 object SecureTokenStore {{
-    private const val ALIAS = "planner_session_key_v1"
+    private const val ALIAS = "planner_session_key_v2"
     private const val PREFS = "planner_secure_session"
-    private const val TOKEN = "token_cipher"
-    private const val IV = "token_iv"
+    private const val ACCESS = "access_cipher"
+    private const val ACCESS_IV = "access_iv"
+    private const val REFRESH = "refresh_cipher"
+    private const val REFRESH_IV = "refresh_iv"
 
     private fun key(): SecretKey {{
         val ks = KeyStore.getInstance("AndroidKeyStore").apply {{ load(null) }}
@@ -51,25 +53,36 @@ object SecureTokenStore {{
         return gen.generateKey()
     }}
 
-    fun save(context: Context, token: String) {{
+    private fun encrypt(context: Context, value: String, cipherKey: String, ivKey: String) {{
+        if (value.isBlank()) {{
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(cipherKey).remove(ivKey).apply()
+            return
+        }}
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, key())
-        val encrypted = cipher.doFinal(token.toByteArray(Charsets.UTF_8))
+        val encrypted = cipher.doFinal(value.toByteArray(Charsets.UTF_8))
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-            .putString(TOKEN, Base64.encodeToString(encrypted, Base64.NO_WRAP))
-            .putString(IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+            .putString(cipherKey, Base64.encodeToString(encrypted, Base64.NO_WRAP))
+            .putString(ivKey, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
             .apply()
     }}
 
-    fun read(context: Context): String? = try {{
+    private fun decrypt(context: Context, cipherKey: String, ivKey: String): String? = try {{
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val enc = prefs.getString(TOKEN, null) ?: return null
-        val iv = prefs.getString(IV, null) ?: return null
+        val enc = prefs.getString(cipherKey, null) ?: return null
+        val iv = prefs.getString(ivKey, null) ?: return null
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, Base64.decode(iv, Base64.NO_WRAP)))
         String(cipher.doFinal(Base64.decode(enc, Base64.NO_WRAP)), Charsets.UTF_8)
     }} catch (_: Exception) {{ null }}
 
+    fun saveAccess(context: Context, token: String) = encrypt(context, token, ACCESS, ACCESS_IV)
+    fun saveTokens(context: Context, access: String, refresh: String?) {{
+        saveAccess(context, access)
+        if (!refresh.isNullOrBlank()) encrypt(context, refresh, REFRESH, REFRESH_IV)
+    }}
+    fun read(context: Context): String? = decrypt(context, ACCESS, ACCESS_IV)
+    fun readRefresh(context: Context): String? = decrypt(context, REFRESH, REFRESH_IV)
     fun clear(context: Context) {{
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
     }}
@@ -95,9 +108,16 @@ class MainActivity : FlutterActivity() {{
                 "setToken" -> {{
                     val token = call.argument<String>("token") ?: ""
                     if (token.isBlank()) result.error("TOKEN_EMPTY", "Token is empty", null)
-                    else {{ SecureTokenStore.save(this, token); result.success(true) }}
+                    else {{ SecureTokenStore.saveAccess(this, token); result.success(true) }}
+                }}
+                "setTokens" -> {{
+                    val access = call.argument<String>("accessToken") ?: ""
+                    val refresh = call.argument<String>("refreshToken")
+                    if (access.isBlank()) result.error("TOKEN_EMPTY", "Access token is empty", null)
+                    else {{ SecureTokenStore.saveTokens(this, access, refresh); result.success(true) }}
                 }}
                 "getToken" -> result.success(SecureTokenStore.read(this))
+                "getRefreshToken" -> result.success(SecureTokenStore.readRefresh(this))
                 "clearToken" -> {{ SecureTokenStore.clear(this); result.success(true) }}
                 else -> result.notImplemented()
             }}
@@ -241,9 +261,8 @@ object PlannerWidgetData {{
     fun refreshAsync(context: Context, pending: android.content.BroadcastReceiver.PendingResult) {{
         Thread {{
             try {{
-                val token = SecureTokenStore.read(context) ?: return@Thread
-                val tasksRaw = fetch("/tasks", token)
-                val eventsRaw = fetch("/events", token)
+                val tasksRaw = fetch(context, "/tasks")
+                val eventsRaw = fetch(context, "/events")
                 val tasks = compact(tasksRaw,"due_at",4)
                 val events = compact(eventsRaw,"starts_at",4)
                 context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit()
@@ -270,11 +289,43 @@ object PlannerWidgetData {{
         }}
     }}
     private fun safeArray(raw:String?):JSONArray=try{{JSONArray(raw?:"[]")}}catch(_:Exception){{JSONArray()}}
-    private fun fetch(path:String,token:String):JSONArray {{
+    private fun fetch(context:Context,path:String):JSONArray {{
+        var access=SecureTokenStore.read(context) ?: throw IllegalStateException("No access token")
+        var result=fetchWithToken(path,access)
+        if(result.first==401) {{
+            val refresh=SecureTokenStore.readRefresh(context) ?: throw IllegalStateException("Session expired")
+            val renewed=refreshTokens(refresh)
+            access=renewed.optString("access_token")
+            val nextRefresh=renewed.optString("refresh_token",refresh)
+            if(access.isBlank()) throw IllegalStateException("Refresh failed")
+            SecureTokenStore.saveTokens(context,access,nextRefresh)
+            result=fetchWithToken(path,access)
+        }}
+        if(result.first !in 200..299) throw IllegalStateException("HTTP ${{result.first}}")
+        return JSONArray(result.second)
+    }}
+    private fun fetchWithToken(path:String,token:String):Pair<Int,String> {{
         val c=URL(API_BASE+path).openConnection() as HttpURLConnection
         c.requestMethod="GET"; c.connectTimeout=10000; c.readTimeout=10000
         c.setRequestProperty("Authorization","Bearer $token"); c.setRequestProperty("Accept","application/json")
-        return try {{ val code=c.responseCode; if(code !in 200..299) throw IllegalStateException("HTTP $code"); JSONArray(c.inputStream.bufferedReader().use{{it.readText()}}) }} finally {{ c.disconnect() }}
+        return try {{
+            val code=c.responseCode
+            val stream=if(code in 200..299)c.inputStream else c.errorStream
+            Pair(code,stream?.bufferedReader()?.use{{it.readText()}} ?: "")
+        }} finally {{ c.disconnect() }}
+    }}
+    private fun refreshTokens(refresh:String):JSONObject {{
+        val c=URL(API_BASE+"/auth/refresh").openConnection() as HttpURLConnection
+        c.requestMethod="POST"; c.doOutput=true; c.connectTimeout=10000; c.readTimeout=10000
+        c.setRequestProperty("Content-Type","application/json"); c.setRequestProperty("Accept","application/json")
+        c.outputStream.use {{ it.write(JSONObject().put("refresh_token",refresh).toString().toByteArray(Charsets.UTF_8)) }}
+        return try {{
+            val code=c.responseCode
+            val stream=if(code in 200..299)c.inputStream else c.errorStream
+            val body=stream?.bufferedReader()?.use{{it.readText()}} ?: ""
+            if(code !in 200..299) throw IllegalStateException("Refresh HTTP $code")
+            JSONObject(body)
+        }} finally {{ c.disconnect() }}
     }}
     private fun countOpen(a:JSONArray):Int {{ var n=0; for(i in 0 until a.length()) if(a.optJSONObject(i)?.optString("status")!="completed") n++; return n }}
     private fun compact(a:JSONArray,key:String,limit:Int):JSONArray {{
@@ -303,24 +354,26 @@ for d in ('layout','xml','drawable','values'):
 
 (res/'drawable/planner_widget_bg.xml').write_text('''<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle"><solid android:color="#F9FCFA"/><corners android:radius="22dp"/><stroke android:width="1dp" android:color="#D8E4DD"/></shape>''',encoding='utf-8')
 
-(res/'layout/planner_widget_overview.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="14dp" android:background="@drawable/planner_widget_bg">
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical"><TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Planner" android:textStyle="bold" android:textSize="17sp"/><TextClock android:layout_width="wrap_content" android:layout_height="wrap_content" android:format24Hour="HH:mm" android:textStyle="bold" android:textSize="15sp"/></LinearLayout>
-<TextView android:id="@+id/widget_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textSize="12sp"/><TextView android:id="@+id/widget_summary" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textStyle="bold" android:paddingTop="3dp"/>
-<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="کارهای بعدی" android:gravity="end" android:textStyle="bold" android:paddingTop="7dp"/><TextView android:id="@+id/widget_task_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:maxLines="1"/><TextView android:id="@+id/widget_task_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:maxLines="1"/><TextView android:id="@+id/widget_task_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:maxLines="1"/>
-<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="رویدادهای بعدی" android:gravity="end" android:textStyle="bold" android:paddingTop="6dp"/><TextView android:id="@+id/widget_event_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:maxLines="1"/><TextView android:id="@+id/widget_event_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:maxLines="1"/>
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingTop="8dp"><Button android:id="@+id/widget_refresh" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="↻"/><Button android:id="@+id/widget_add_task" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="+ کار"/><Button android:id="@+id/widget_add_event" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="+ رویداد"/></LinearLayout></LinearLayout>''',encoding='utf-8')
+(res/'drawable/planner_widget_section_bg.xml').write_text('''<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle"><solid android:color="#FFFFFF"/><corners android:radius="10dp"/><stroke android:width="1dp" android:color="#E2EAE5"/></shape>''',encoding='utf-8')
 
-(res/'layout/planner_widget_clock.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/clock_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:gravity="center" android:padding="16dp" android:background="@drawable/planner_widget_bg"><TextClock android:layout_width="wrap_content" android:layout_height="wrap_content" android:format24Hour="HH:mm" android:textSize="50sp" android:textStyle="bold"/><TextView android:id="@+id/clock_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:textSize="18sp" android:textStyle="bold" android:paddingTop="8dp"/><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="Planner" android:textSize="12sp" android:paddingTop="5dp"/></LinearLayout>''',encoding='utf-8')
+(res/'layout/planner_widget_overview.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:layoutDirection="rtl" android:textDirection="rtl" android:gravity="end" android:padding="14dp" android:background="@drawable/planner_widget_bg">
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layoutDirection="rtl" android:gravity="center_vertical"><TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Planner" android:gravity="start" android:textStyle="bold" android:textSize="18sp"/><TextClock android:layout_width="wrap_content" android:layout_height="wrap_content" android:format24Hour="HH:mm" android:textStyle="bold" android:textSize="20sp"/></LinearLayout>
+<TextView android:id="@+id/widget_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:textSize="14sp" android:textStyle="bold" android:paddingTop="2dp"/><TextView android:id="@+id/widget_summary" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:textStyle="bold" android:paddingTop="5dp"/>
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="کارهای بعدی" android:gravity="end" android:textStyle="bold" android:paddingTop="8dp"/><TextView android:id="@+id/widget_task_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/><TextView android:id="@+id/widget_task_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/><TextView android:id="@+id/widget_task_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/>
+<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="رویدادهای بعدی" android:gravity="end" android:textStyle="bold" android:paddingTop="8dp"/><TextView android:id="@+id/widget_event_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/><TextView android:id="@+id/widget_event_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/>
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layoutDirection="rtl" android:paddingTop="8dp"><Button android:id="@+id/widget_add_event" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="+ رویداد"/><Button android:id="@+id/widget_add_task" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="+ کار"/><Button android:id="@+id/widget_refresh" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="↻"/></LinearLayout></LinearLayout>''',encoding='utf-8')
 
-(res/'layout/planner_widget_tasks.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/tasks_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="14dp" android:background="@drawable/planner_widget_bg"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="کارهای بعدی" android:textStyle="bold" android:textSize="18sp" android:gravity="end"/><TextView android:id="@+id/tasks_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textSize="11sp"/><TextView android:id="@+id/tasks_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:paddingTop="8dp"/><TextView android:id="@+id/tasks_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end"/><TextView android:id="@+id/tasks_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end"/><TextView android:id="@+id/tasks_4" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end"/><LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingTop="8dp"><Button android:id="@+id/tasks_refresh" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="↻"/><Button android:id="@+id/tasks_add" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="2" android:text="+ کار جدید"/></LinearLayout></LinearLayout>''',encoding='utf-8')
+(res/'layout/planner_widget_clock.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/clock_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:layoutDirection="rtl" android:textDirection="rtl" android:gravity="center" android:padding="16dp" android:background="@drawable/planner_widget_bg"><TextClock android:layout_width="wrap_content" android:layout_height="wrap_content" android:format24Hour="HH:mm" android:textSize="52sp" android:textStyle="bold"/><TextView android:id="@+id/clock_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:textDirection="rtl" android:textSize="19sp" android:textStyle="bold" android:paddingTop="8dp"/><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="Planner" android:textSize="12sp" android:paddingTop="5dp"/></LinearLayout>''',encoding='utf-8')
 
-(res/'layout/planner_widget_agenda.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/agenda_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="14dp" android:background="@drawable/planner_widget_bg"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="برنامه پیش‌رو" android:textStyle="bold" android:textSize="18sp" android:gravity="end"/><TextView android:id="@+id/agenda_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textSize="11sp"/><TextView android:id="@+id/agenda_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:paddingTop="8dp"/><TextView android:id="@+id/agenda_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end"/><TextView android:id="@+id/agenda_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end"/><TextView android:id="@+id/agenda_4" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end"/><LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingTop="8dp"><Button android:id="@+id/agenda_refresh" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="↻"/><Button android:id="@+id/agenda_add" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="2" android:text="+ رویداد"/></LinearLayout></LinearLayout>''',encoding='utf-8')
+(res/'layout/planner_widget_tasks.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/tasks_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:layoutDirection="rtl" android:textDirection="rtl" android:gravity="end" android:padding="14dp" android:background="@drawable/planner_widget_bg"><LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layoutDirection="rtl" android:gravity="center_vertical"><TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="کارهای بعدی" android:textStyle="bold" android:textSize="18sp" android:gravity="start"/><TextClock android:layout_width="wrap_content" android:layout_height="wrap_content" android:format24Hour="HH:mm" android:textStyle="bold" android:textSize="24sp"/></LinearLayout><TextView android:id="@+id/tasks_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:textSize="15sp" android:textStyle="bold" android:paddingTop="2dp"/><TextView android:id="@+id/tasks_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="8dp" android:layout_marginTop="7dp"/><TextView android:id="@+id/tasks_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="8dp" android:layout_marginTop="5dp"/><TextView android:id="@+id/tasks_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="8dp" android:layout_marginTop="5dp"/><TextView android:id="@+id/tasks_4" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="8dp" android:layout_marginTop="5dp"/><LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layoutDirection="rtl" android:paddingTop="9dp"><Button android:id="@+id/tasks_add" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="2" android:text="+ کار جدید"/><Button android:id="@+id/tasks_refresh" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="↻"/></LinearLayout></LinearLayout>''',encoding='utf-8')
+
+(res/'layout/planner_widget_agenda.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/agenda_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:layoutDirection="rtl" android:textDirection="rtl" android:gravity="end" android:padding="14dp" android:background="@drawable/planner_widget_bg"><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="برنامه پیش‌رو" android:textStyle="bold" android:textSize="18sp" android:gravity="end"/><TextView android:id="@+id/agenda_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:textSize="14sp" android:textStyle="bold"/><TextView android:id="@+id/agenda_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="8dp" android:layout_marginTop="7dp"/><TextView android:id="@+id/agenda_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="8dp" android:layout_marginTop="5dp"/><TextView android:id="@+id/agenda_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="8dp" android:layout_marginTop="5dp"/><TextView android:id="@+id/agenda_4" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="8dp" android:layout_marginTop="5dp"/><LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layoutDirection="rtl" android:paddingTop="9dp"><Button android:id="@+id/agenda_add" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="2" android:text="+ رویداد"/><Button android:id="@+id/agenda_refresh" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="↻"/></LinearLayout></LinearLayout>''',encoding='utf-8')
 
 infos = {
- 'planner_widget_overview_info.xml':('@layout/planner_widget_overview','180dp','220dp'),
+ 'planner_widget_overview_info.xml':('@layout/planner_widget_overview','180dp','250dp'),
  'planner_widget_clock_info.xml':('@layout/planner_widget_clock','180dp','100dp'),
- 'planner_widget_tasks_info.xml':('@layout/planner_widget_tasks','180dp','180dp'),
- 'planner_widget_agenda_info.xml':('@layout/planner_widget_agenda','180dp','180dp'),
+ 'planner_widget_tasks_info.xml':('@layout/planner_widget_tasks','180dp','230dp'),
+ 'planner_widget_agenda_info.xml':('@layout/planner_widget_agenda','180dp','220dp'),
 }
 for name,(layout,w,h) in infos.items():
     (res/'xml'/name).write_text(f'''<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android" android:minWidth="{w}" android:minHeight="{h}" android:minResizeWidth="110dp" android:minResizeHeight="80dp" android:updatePeriodMillis="1800000" android:initialLayout="{layout}" android:resizeMode="horizontal|vertical" android:widgetCategory="home_screen"/>''',encoding='utf-8')

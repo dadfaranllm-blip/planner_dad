@@ -1,4 +1,7 @@
-Planner Android 1.3.0+15
-Widgets: overview, clock/date, tasks, agenda
-Workspace: collaborative autosave + server merge support
-Security: Android Keystore AES-GCM, HTTPS only, backup disabled
+Planner Android complete 1.4.0+16
+- Official 1405 calendar occasions and holidays in Android calendar
+- Only one add action in the top app bar; duplicate home/FAB actions removed
+- Bottom navigation wrapped in SafeArea for system navigation bars
+- Access + refresh session flow with Keystore storage and automatic refresh
+- Four RTL widgets; task widget has larger clock/date and separated readable rows
+- Workspace collaboration retained

@@ -14,15 +14,36 @@ const apiBase = String.fromEnvironment(
 );
 const widgetChannel = MethodChannel('planner/widget');
 const securityChannel = MethodChannel('planner/security');
-const appVersion = '1.3.0';
-const appBuild = '15';
+const appVersion = '1.4.0';
+const appBuild = '16';
+
+class SessionExpiredException implements Exception {
+  const SessionExpiredException();
+  @override
+  String toString() => 'نشست شما منقضی شده است. دوباره وارد شوید.';
+}
+
+class AuthEvents {
+  static final StreamController<void> _expired = StreamController<void>.broadcast();
+  static Stream<void> get expired => _expired.stream;
+  static void notifyExpired() => _expired.add(null);
+}
 
 class SecureSession {
   static Future<String?> get token async =>
       securityChannel.invokeMethod<String>('getToken');
+  static Future<String?> get refreshToken async =>
+      securityChannel.invokeMethod<String>('getRefreshToken');
 
   static Future<void> setToken(String token) async {
     await securityChannel.invokeMethod('setToken', {'token': token});
+  }
+
+  static Future<void> setTokens(String accessToken, String? refreshToken) async {
+    await securityChannel.invokeMethod('setTokens', {
+      'accessToken': accessToken,
+      'refreshToken': refreshToken ?? '',
+    });
   }
 
   static Future<void> clear() async {
@@ -43,20 +64,47 @@ class Api {
     String method = 'GET',
     Object? body,
     bool auth = true,
+    bool allowRefresh = true,
   }) async {
     final t = await token();
     final r = http.Request(method, Uri.parse('$apiBase$path'));
     r.headers['Content-Type'] = 'application/json';
-    if (auth && t != null) r.headers['Authorization'] = 'Bearer $t';
+    r.headers['Accept'] = 'application/json';
+    if (auth && t != null && t.isNotEmpty) r.headers['Authorization'] = 'Bearer $t';
     if (body != null) r.body = jsonEncode(body);
-    final s = await r.send();
+    final s = await r.send().timeout(const Duration(seconds: 20));
     final txt = await s.stream.bytesToString();
+
+    if (s.statusCode == 401 && auth && allowRefresh) {
+      final refresh = await SecureSession.refreshToken;
+      if (refresh != null && refresh.isNotEmpty) {
+        try {
+          final renewed = await call(
+            '/auth/refresh',
+            method: 'POST',
+            auth: false,
+            allowRefresh: false,
+            body: {'refresh_token': refresh},
+          );
+          await SecureSession.setTokens(
+            renewed['access_token']?.toString() ?? '',
+            renewed['refresh_token']?.toString(),
+          );
+          return call(path, method: method, body: body, auth: auth, allowRefresh: false);
+        } catch (_) {}
+      }
+      await SecureSession.clear();
+      AuthEvents.notifyExpired();
+      throw const SessionExpiredException();
+    }
+
     if (s.statusCode >= 400) {
       var message = txt;
       try {
         final decoded = jsonDecode(txt);
         if (decoded is Map && decoded['detail'] != null) {
-          message = decoded['detail'].toString();
+          final detail = decoded['detail'];
+          message = detail is String ? detail : (detail['message']?.toString() ?? detail.toString());
         }
       } catch (_) {}
       throw Exception(message);
@@ -175,18 +223,29 @@ class Gate extends StatefulWidget {
 class _GateState extends State<Gate> {
   final AppLinks _links = AppLinks();
   StreamSubscription<Uri>? _sub;
+  StreamSubscription<void>? _authExpiredSub;
   bool? has;
 
   @override
   void initState() {
     super.initState();
     _sub = _links.uriLinkStream.listen(_handleLink);
+    _authExpiredSub = AuthEvents.expired.listen((_) { if (mounted) setState(() => has = false); });
     _readToken();
   }
 
   Future<void> _readToken() async {
     final t = await SecureSession.token;
-    if (mounted) setState(() => has = t != null && t.isNotEmpty);
+    if (t == null || t.isEmpty) {
+      if (mounted) setState(() => has = false);
+      return;
+    }
+    try {
+      await Api.call('/me');
+      if (mounted) setState(() => has = true);
+    } catch (_) {
+      if (mounted) setState(() => has = false);
+    }
   }
 
   Future<void> _handleLink(Uri uri) async {
@@ -200,6 +259,7 @@ class _GateState extends State<Gate> {
   @override
   void dispose() {
     _sub?.cancel();
+    _authExpiredSub?.cancel();
     super.dispose();
   }
 
@@ -238,7 +298,7 @@ class _LoginState extends State<Login> {
         auth: false,
         body: {'email': email.text.trim(), 'password': pass.text},
       );
-      await SecureSession.setToken(r['access_token']);
+      await SecureSession.setTokens(r['access_token'], r['refresh_token']);
       widget.onLogin();
     } catch (_) {
       if (mounted) setState(() => err = 'ورود انجام نشد');
@@ -805,7 +865,7 @@ class _HomeState extends State<Home> {
     final openTasks = tasks.where((x) => x['status'] != 'completed').toList();
     final openEvents = events.where((x) => x['status'] != 'completed').toList();
     final pages = [
-      Today(tasks: openTasks, events: openEvents, onAct: act, onAdd: add),
+      Today(tasks: openTasks, events: openEvents, onAct: act),
       ItemsPage(title: 'کارها', kind: 'task', items: openTasks, onAct: act),
       ItemsPage(title: 'رویدادها', kind: 'event', items: openEvents, onAct: act),
       CalendarPage(tasks: openTasks, events: openEvents, onAct: act),
@@ -847,29 +907,22 @@ class _HomeState extends State<Home> {
           : error != null
               ? Center(child: Text(error!))
               : RefreshIndicator(onRefresh: load, child: pages[tab]),
-      floatingActionButton: tab <= 3
-          ? FloatingActionButton.extended(
-              onPressed: tab == 1
-                  ? () => add('task')
-                  : tab == 2
-                      ? () => add('event')
-                      : showCreateMenu,
-              icon: const Icon(Icons.add),
-              label: Text(tab == 1 ? 'کار جدید' : tab == 2 ? 'رویداد جدید' : 'افزودن'),
-            )
-          : null,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: tab,
-        onDestinationSelected: (i) => setState(() => tab = i),
-        labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.today_outlined), label: 'امروز'),
-          NavigationDestination(icon: Icon(Icons.check_circle_outline), label: 'کارها'),
-          NavigationDestination(icon: Icon(Icons.event_outlined), label: 'رویداد'),
-          NavigationDestination(icon: Icon(Icons.calendar_month_outlined), label: 'تقویم'),
-          NavigationDestination(icon: Icon(Icons.groups_outlined), label: 'فضای کار'),
-          NavigationDestination(icon: Icon(Icons.chat_bubble_outline), label: 'پیام'),
-        ],
+      bottomNavigationBar: SafeArea(
+        top: false,
+        minimum: const EdgeInsets.only(bottom: 4),
+        child: NavigationBar(
+          selectedIndex: tab,
+          onDestinationSelected: (i) => setState(() => tab = i),
+          labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
+          destinations: const [
+            NavigationDestination(icon: Icon(Icons.today_outlined), label: 'امروز'),
+            NavigationDestination(icon: Icon(Icons.check_circle_outline), label: 'کارها'),
+            NavigationDestination(icon: Icon(Icons.event_outlined), label: 'رویداد'),
+            NavigationDestination(icon: Icon(Icons.calendar_month_outlined), label: 'تقویم'),
+            NavigationDestination(icon: Icon(Icons.groups_outlined), label: 'فضای کار'),
+            NavigationDestination(icon: Icon(Icons.chat_bubble_outline), label: 'پیام'),
+          ],
+        ),
       ),
     );
   }
@@ -881,13 +934,11 @@ class Today extends StatelessWidget {
   final List<dynamic> tasks;
   final List<dynamic> events;
   final ActionFn onAct;
-  final Future<void> Function(String kind) onAdd;
   const Today({
     super.key,
     required this.tasks,
     required this.events,
     required this.onAct,
-    required this.onAdd,
   });
 
   @override
@@ -909,27 +960,6 @@ class Today extends StatelessWidget {
             Expanded(child: Stat(title: 'رویدادها', value: events.length, icon: Icons.event_outlined)),
           ],
         ),
-        const SizedBox(height: 12),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: () => onAdd('task'),
-                icon: const Icon(Icons.add_task),
-                label: const Text('کار جدید'),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: FilledButton.tonalIcon(
-                onPressed: () => onAdd('event'),
-                icon: const Icon(Icons.event_available),
-                label: const Text('رویداد جدید'),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
         const SizedBox(height: 18),
         const Text('برنامه‌های پیش رو', style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
@@ -1081,6 +1111,8 @@ class _CalendarPageState extends State<CalendarPage> {
   late int year;
   late int month;
   int selected = 1;
+  List<dynamic> officialDays = [];
+  bool officialLoading = false;
 
   @override
   void initState() {
@@ -1089,6 +1121,33 @@ class _CalendarPageState extends State<CalendarPage> {
     year = n.year;
     month = n.month;
     selected = n.day;
+    _loadOfficial();
+  }
+
+  Future<void> _loadOfficial() async {
+    if (year != 1405) {
+      if (mounted) setState(() => officialDays = []);
+      return;
+    }
+    if (mounted) setState(() => officialLoading = true);
+    try {
+      final x = await Api.call(
+        '/official-calendar/$year/$month?include_supplement=true&include_profession=false',
+        auth: false,
+      );
+      if (mounted) setState(() => officialDays = x['days'] ?? []);
+    } catch (_) {
+      if (mounted) setState(() => officialDays = []);
+    } finally {
+      if (mounted) setState(() => officialLoading = false);
+    }
+  }
+
+  dynamic officialFor(int day) {
+    for (final x in officialDays) {
+      if (x['day'] == day) return x;
+    }
+    return null;
   }
 
   List<dynamic> itemsFor(int day) {
@@ -1111,6 +1170,7 @@ class _CalendarPageState extends State<CalendarPage> {
       if (month == 0) { month = 12; year--; }
       selected = 1;
     });
+    _loadOfficial();
   }
 
   @override
@@ -1122,19 +1182,46 @@ class _CalendarPageState extends State<CalendarPage> {
       ...List.generate(offset, (_) => const SizedBox()),
       ...List.generate(length, (i) {
         final day = i + 1;
+        final od = officialFor(day);
+        final holiday = od != null && (od['official_holiday'] == true || od['weekend'] == true);
+        final hasOccasion = od != null && ((od['occasion'] ?? '').toString().trim().isNotEmpty || (od['extra_occasions'] as List?)?.isNotEmpty == true);
         return InkWell(
           onTap: () => setState(() => selected = day),
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(12),
           child: Container(
             decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              color: selected == day ? const Color(0xffe7f4ec) : Colors.white,
-              border: Border.all(color: const Color(0xffe5e9e6)),
+              borderRadius: BorderRadius.circular(12),
+              color: holiday
+                  ? const Color(0xfffff1f2)
+                  : selected == day
+                      ? const Color(0xffe7f4ec)
+                      : Colors.white,
+              border: Border.all(
+                color: selected == day
+                    ? Theme.of(context).colorScheme.primary
+                    : holiday
+                        ? const Color(0xfffecdd3)
+                        : const Color(0xffe5e9e6),
+              ),
             ),
             padding: const EdgeInsets.all(7),
             child: Stack(
               children: [
-                Text('$day'),
+                Text(
+                  '$day',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    color: holiday ? const Color(0xffb91c1c) : null,
+                  ),
+                ),
+                if (holiday)
+                  const Positioned(
+                    left: 1,
+                    top: 1,
+                    child: Text('تعطیل', style: TextStyle(fontSize: 8, color: Color(0xffb91c1c), fontWeight: FontWeight.w800)),
+                  ),
+                if (hasOccasion)
+                  const Positioned(bottom: 2, left: 2, child: CircleAvatar(radius: 3, backgroundColor: Color(0xfff59e0b))),
                 if (itemsFor(day).isNotEmpty)
                   const Positioned(bottom: 2, right: 2, child: CircleAvatar(radius: 3)),
               ],
@@ -1144,29 +1231,36 @@ class _CalendarPageState extends State<CalendarPage> {
       }),
     ];
     final selectedItems = itemsFor(selected);
+    final od = officialFor(selected);
+    final extras = od?['extra_occasions'] is List ? od['extra_occasions'] as List : const [];
+    final holiday = od != null && (od['official_holiday'] == true || od['weekend'] == true);
     return ListView(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
+      physics: const AlwaysScrollableScrollPhysics(),
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            IconButton(onPressed: () => move(-1), icon: const Icon(Icons.chevron_right)),
-            Text('${Jalali(year, month).formatter.mN} $year', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-            IconButton(onPressed: () => move(1), icon: const Icon(Icons.chevron_left)),
-          ],
-        ),
+        Row(children: [
+          IconButton(onPressed: () => move(-1), icon: const Icon(Icons.chevron_right)),
+          Expanded(child: Text('${Jalali(year, month).formatter.mN} $year', textAlign: TextAlign.center, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900))),
+          IconButton(onPressed: () => move(1), icon: const Icon(Icons.chevron_left)),
+        ]),
+        if (officialLoading) const LinearProgressIndicator(minHeight: 2),
+        if (year != 1405)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text('مناسبت‌های رسمی فعلاً برای سال ۱۴۰۵ در دسترس است.', textAlign: TextAlign.center),
+          ),
         const Directionality(
           textDirection: TextDirection.rtl,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: [
-              Text('ش'),
-              Text('ی'),
-              Text('د'),
-              Text('س'),
-              Text('چ'),
-              Text('پ'),
-              Text('ج'),
+              Text('ش', style: TextStyle(fontWeight: FontWeight.w800)),
+              Text('ی', style: TextStyle(fontWeight: FontWeight.w800)),
+              Text('د', style: TextStyle(fontWeight: FontWeight.w800)),
+              Text('س', style: TextStyle(fontWeight: FontWeight.w800)),
+              Text('چ', style: TextStyle(fontWeight: FontWeight.w800)),
+              Text('پ', style: TextStyle(fontWeight: FontWeight.w800)),
+              Text('ج', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xffb91c1c))),
             ],
           ),
         ),
@@ -1183,9 +1277,38 @@ class _CalendarPageState extends State<CalendarPage> {
           ),
         ),
         const SizedBox(height: 18),
-        Text('$selected ${Jalali(year, month).formatter.mN}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        Row(children: [
+          Expanded(child: Text('$selected ${Jalali(year, month).formatter.mN}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+          if (holiday)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(color: const Color(0xffffe4e6), borderRadius: BorderRadius.circular(999)),
+              child: Text(od?['official_holiday'] == true ? 'تعطیل رسمی' : 'جمعه / تعطیل هفتگی', style: const TextStyle(color: Color(0xffb91c1c), fontWeight: FontWeight.w800, fontSize: 11)),
+            ),
+        ]),
+        if (od != null && (od['occasion'] ?? '').toString().trim().isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Card(
+            color: holiday ? const Color(0xfffff1f2) : const Color(0xfffffbeb),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Text(holiday ? 'مناسبت تعطیل' : 'مناسبت رسمی', style: TextStyle(fontWeight: FontWeight.w900, color: holiday ? const Color(0xffb91c1c) : const Color(0xff92400e))),
+                const SizedBox(height: 4),
+                Text(od['occasion'].toString(), textAlign: TextAlign.right),
+              ]),
+            ),
+          ),
+        ],
+        ...extras.map((x) => Card(
+          child: ListTile(
+            leading: const Icon(Icons.auto_awesome_outlined),
+            title: Text((x['occasion'] ?? '').toString()),
+            subtitle: Text(x['category'] == 'profession' ? 'مناسبت صنفی' : 'ضمیمه تقویم رسمی'),
+          ),
+        )),
         const SizedBox(height: 8),
-        if (selectedItems.isEmpty) const Empty(text: 'موردی در این روز نیست'),
+        if (selectedItems.isEmpty && od == null) const Empty(text: 'موردی در این روز نیست'),
         ...selectedItems.map((x) => ItemCard(item: x['item'], kind: x['kind'], onAct: widget.onAct)),
       ],
     );
@@ -2231,10 +2354,20 @@ class _ClockWidgetPreview extends StatelessWidget {
 class _TasksWidgetPreview extends StatelessWidget {
   const _TasksWidgetPreview();
   @override
-  Widget build(BuildContext context) => const _WidgetPreviewShell(child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-    Text('کارهای بعدی', style: TextStyle(fontWeight: FontWeight.w900)), SizedBox(height: 8),
-    Text('• ارسال گزارش کارشناسی', maxLines: 1), Text('• تماس با موکل', maxLines: 1), Text('• بررسی مستندات', maxLines: 1),
-  ]));
+  Widget build(BuildContext context) => _WidgetPreviewShell(child: Directionality(
+    textDirection: TextDirection.rtl,
+    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(children: [
+        const Expanded(child: Text('کارهای بعدی', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16))),
+        const Text('۱۰:۴۲', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 20)),
+      ]),
+      Text('${Jalali.now().formatter.wN} ${Jalali.now().formatter.d} ${Jalali.now().formatter.mN}', textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w700)),
+      const SizedBox(height: 6),
+      const Text('ارسال گزارش کارشناسی', maxLines: 1),
+      const Divider(height: 6),
+      const Text('تماس با موکل', maxLines: 1),
+    ]),
+  ));
 }
 
 class _AgendaWidgetPreview extends StatelessWidget {

@@ -1,11 +1,11 @@
-# Planner Android Widgets 1.3.0
+# Planner Android Widgets 1.4.0
 
-The build generates four native AppWidget providers:
-- `PlannerWidgetProvider` — overview
-- `PlannerClockWidgetProvider` — large live clock + Persian date
-- `PlannerTasksWidgetProvider` — upcoming tasks
-- `PlannerAgendaWidgetProvider` — upcoming events
+چهار ویجت مستقل:
+1. خلاصه Planner
+2. ساعت و تاریخ
+3. کارهای بعدی
+4. برنامه و رویدادها
 
-All widgets are exposed in Android's widget picker with distinct labels and can also be pinned from **Settings → Home screen widgets**.
-
-The clock uses Android `TextClock`, so the displayed time updates live without waiting for the 30-minute AppWidget refresh interval. Data widgets refresh cached/API data and use the securely stored session token from Android Keystore.
+همه ویجت‌ها RTL هستند. ویجت کارها ساعت و تاریخ درشت‌تر و ردیف‌های تفکیک‌شده دارد.
+مدیریت Pin کردن ویجت از Settings داخل اپ انجام می‌شود.
+Tokenها برای Refresh ویجت در Android Keystore نگهداری می‌شوند و در صورت 401، refresh token rotation استفاده می‌شود.
