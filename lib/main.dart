@@ -15,8 +15,8 @@ const apiBase = String.fromEnvironment(
 const widgetChannel = MethodChannel('planner/widget');
 const securityChannel = MethodChannel('planner/security');
 const notificationChannel = MethodChannel('planner/notifications');
-const appVersion = '1.5.0';
-const appBuild = '17';
+const appVersion = '1.6.0';
+const appBuild = '18';
 
 class SessionExpiredException implements Exception {
   const SessionExpiredException();
@@ -282,131 +282,191 @@ class Login extends StatefulWidget {
 }
 
 class _LoginState extends State<Login> {
-  final email = TextEditingController();
+  final identifier = TextEditingController();
   final pass = TextEditingController();
   String? err;
   bool busy = false;
 
   Future<void> go() async {
-    setState(() {
-      busy = true;
-      err = null;
-    });
+    setState(() { busy = true; err = null; });
     try {
-      final r = await Api.call(
-        '/auth/login',
-        method: 'POST',
-        auth: false,
-        body: {'email': email.text.trim(), 'password': pass.text},
-      );
+      final r = await Api.call('/auth/login', method: 'POST', auth: false, body: {
+        'identifier': identifier.text.trim(), 'password': pass.text,
+      });
       await SecureSession.setTokens(r['access_token'], r['refresh_token']);
       widget.onLogin();
-    } catch (_) {
-      if (mounted) setState(() => err = 'ورود انجام نشد');
+    } catch (e) {
+      if (mounted) setState(() => err = e.toString().replaceFirst('Exception: ', ''));
     } finally {
       if (mounted) setState(() => busy = false);
     }
   }
 
   Future<void> social(String provider) async {
-    setState(() {
-      busy = true;
-      err = null;
-    });
+    setState(() { busy = true; err = null; });
     try {
-      final r = await Api.call(
-        '/auth/$provider/start?return_to=${Uri.encodeComponent('planner://oauth')}',
-        auth: false,
-      );
+      final r = await Api.call('/auth/$provider/start?return_to=${Uri.encodeComponent('planner://oauth')}', auth: false);
       final url = Uri.parse(r['authorization_url']);
-      if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
-        throw Exception('مرورگر باز نشد');
-      }
+      if (!await launchUrl(url, mode: LaunchMode.externalApplication)) throw Exception('مرورگر باز نشد');
     } catch (e) {
       if (mounted) setState(() => err = e.toString());
-    } finally {
-      if (mounted) setState(() => busy = false);
-    }
+    } finally { if (mounted) setState(() => busy = false); }
   }
 
   @override
-  void dispose() {
-    email.dispose();
-    pass.dispose();
-    super.dispose();
-  }
+  void dispose() { identifier.dispose(); pass.dispose(); super.dispose(); }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: Center(
+  Widget build(BuildContext context) => Scaffold(
+    body: SafeArea(
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 430),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Icon(Icons.event_note_rounded, size: 72),
-                  const SizedBox(height: 14),
-                  const Text(
-                    'برنامه‌ریز',
-                    textAlign: TextAlign.right,
-                    style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton(
-                          onPressed: busy ? null : () => social('google'),
-                          child: const Text('Google'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: FilledButton.tonal(
-                          onPressed: busy ? null : () => social('apple'),
-                          child: const Text('Apple'),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 14),
-                    child: Text('یا', textAlign: TextAlign.center),
-                  ),
-                  TextField(
-                    controller: email,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(labelText: 'ایمیل'),
-                  ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: pass,
-                    obscureText: true,
-                    decoration: const InputDecoration(labelText: 'رمز عبور'),
-                  ),
-                  if (err != null)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 10),
-                      child: Text(err!, style: const TextStyle(color: Colors.red)),
-                    ),
-                  const SizedBox(height: 18),
-                  FilledButton(
-                    onPressed: busy ? null : go,
-                    child: Text(busy ? '...' : 'ورود'),
-                  ),
-                ],
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              const Icon(Icons.event_note_rounded, size: 72),
+              const SizedBox(height: 14),
+              const Text('برنامه‌ریز', textAlign: TextAlign.right, style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 24),
+              Row(children: [
+                Expanded(child: OutlinedButton(onPressed: busy ? null : () => social('google'), child: const Text('Google'))),
+                const SizedBox(width: 8),
+                Expanded(child: FilledButton.tonal(onPressed: busy ? null : () => social('apple'), child: const Text('Apple'))),
+              ]),
+              const Padding(padding: EdgeInsets.symmetric(vertical: 14), child: Text('یا', textAlign: TextAlign.center)),
+              TextField(
+                controller: identifier,
+                keyboardType: TextInputType.emailAddress,
+                autofillHints: const <String>[],
+                enableSuggestions: false,
+                autocorrect: false,
+                decoration: const InputDecoration(labelText: 'ایمیل یا شماره همراه'),
               ),
-            ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: pass,
+                obscureText: true,
+                autofillHints: const [AutofillHints.password],
+                enableSuggestions: false,
+                autocorrect: false,
+                decoration: const InputDecoration(labelText: 'رمز عبور'),
+              ),
+              if (err != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(err!, style: const TextStyle(color: Colors.red))),
+              const SizedBox(height: 18),
+              FilledButton(onPressed: busy ? null : go, child: Text(busy ? '...' : 'ورود')),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: busy ? null : () async {
+                  final ok = await Navigator.push<bool>(context, MaterialPageRoute(builder: (_) => const RegisterPage()));
+                  if (ok == true && mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('حساب ساخته شد.')));
+                },
+                icon: const Icon(Icons.person_add_alt_1),
+                label: const Text('ثبت‌نام'),
+              ),
+            ]),
           ),
         ),
       ),
-    );
+    ),
+  );
+}
+
+class RegisterPage extends StatefulWidget {
+  const RegisterPage({super.key});
+  @override
+  State<RegisterPage> createState() => _RegisterPageState();
+}
+
+class _RegisterPageState extends State<RegisterPage> {
+  final displayName = TextEditingController();
+  final firstName = TextEditingController();
+  final lastName = TextEditingController();
+  final identifier = TextEditingController();
+  final password = TextEditingController();
+  final code = TextEditingController();
+  bool phoneEnabled = true, emailEnabled = true, busy = true;
+  String method = 'email';
+  String? challengeId, masked, err, debugCode;
+
+  @override
+  void initState() { super.initState(); loadConfig(); }
+  Future<void> loadConfig() async {
+    try {
+      final c = await Api.call('/public/config', auth: false);
+      if (mounted) setState(() { phoneEnabled = c['phone_registration_enabled'] != false; emailEnabled = c['email_registration_enabled'] != false; method = emailEnabled ? 'email' : 'phone'; busy = false; });
+    } catch (_) { if (mounted) setState(() => busy = false); }
   }
+
+  Future<void> start() async {
+    if (displayName.text.trim().isEmpty || identifier.text.trim().isEmpty || password.text.length < 8) {
+      setState(() => err = 'نام، ایمیل/شماره و رمز حداقل ۸ کاراکتری لازم است.'); return;
+    }
+    setState(() { busy = true; err = null; });
+    try {
+      final x = await Api.call('/auth/register/start', method: 'POST', auth: false, body: {
+        'method': method, 'identifier': identifier.text.trim(), 'password': password.text,
+        'display_name': displayName.text.trim(), 'first_name': firstName.text.trim().isEmpty ? null : firstName.text.trim(),
+        'last_name': lastName.text.trim().isEmpty ? null : lastName.text.trim(),
+      });
+      if (mounted) setState(() { challengeId = x['challenge_id']; masked = x['masked_identifier']; debugCode = x['debug_code']; });
+    } catch (e) { if (mounted) setState(() => err = e.toString().replaceFirst('Exception: ', '')); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+
+  Future<void> verify() async {
+    if (challengeId == null || code.text.trim().length < 4) return;
+    setState(() { busy = true; err = null; });
+    try {
+      final x = await Api.call('/auth/register/verify', method: 'POST', auth: false, body: {'challenge_id': challengeId, 'code': code.text.trim()});
+      await SecureSession.setTokens(x['access_token'], x['refresh_token']);
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) { if (mounted) setState(() => err = e.toString().replaceFirst('Exception: ', '')); }
+    finally { if (mounted) setState(() => busy = false); }
+  }
+
+  @override
+  void dispose() { for (final c in [displayName, firstName, lastName, identifier, password, code]) { c.dispose(); } super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('ثبت‌نام')),
+    body: SafeArea(child: Center(child: SingleChildScrollView(padding: const EdgeInsets.all(18), child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 480),
+      child: busy && challengeId == null ? const Center(child: CircularProgressIndicator()) : Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        if (challengeId == null && !emailEnabled && !phoneEnabled) ...[
+          const Card(child: Padding(padding: EdgeInsets.all(18), child: Text('ثبت‌نام جدید موقتاً توسط مدیر سامانه غیرفعال شده است.', textAlign: TextAlign.center))),
+        ] else if (challengeId == null) ...[
+          SegmentedButton<String>(
+            segments: [if (emailEnabled) const ButtonSegment(value: 'email', label: Text('ایمیل'), icon: Icon(Icons.email_outlined)), if (phoneEnabled) const ButtonSegment(value: 'phone', label: Text('شماره همراه'), icon: Icon(Icons.phone_android))],
+            selected: {method}, onSelectionChanged: (v) => setState(() { method = v.first; identifier.clear(); }),
+          ),
+          const SizedBox(height: 16),
+          TextField(controller: displayName, autofillHints: const <String>[], enableSuggestions: false, autocorrect: false, decoration: const InputDecoration(labelText: 'نام نمایشی')),
+          const SizedBox(height: 10),
+          Row(children: [
+            Expanded(child: TextField(controller: firstName, autofillHints: const <String>[], enableSuggestions: false, autocorrect: false, decoration: const InputDecoration(labelText: 'نام'))),
+            const SizedBox(width: 8),
+            Expanded(child: TextField(controller: lastName, autofillHints: const <String>[], enableSuggestions: false, autocorrect: false, decoration: const InputDecoration(labelText: 'نام خانوادگی'))),
+          ]),
+          const SizedBox(height: 10),
+          TextField(controller: identifier, keyboardType: method == 'phone' ? TextInputType.phone : TextInputType.emailAddress, autofillHints: const <String>[], enableSuggestions: false, autocorrect: false, decoration: InputDecoration(labelText: method == 'phone' ? 'شماره همراه' : 'ایمیل')),
+          const SizedBox(height: 10),
+          TextField(controller: password, obscureText: true, autofillHints: const [AutofillHints.newPassword], enableSuggestions: false, autocorrect: false, decoration: const InputDecoration(labelText: 'رمز عبور')),
+          const SizedBox(height: 14), FilledButton.icon(onPressed: busy ? null : start, icon: const Icon(Icons.sms_outlined), label: const Text('ارسال کد تأیید')),
+        ] else ...[
+          const Icon(Icons.verified_user_outlined, size: 58), const SizedBox(height: 12),
+          Text('کد تأیید ارسال‌شده به $masked را وارد کنید.', textAlign: TextAlign.center),
+          if (debugCode != null) Padding(padding: const EdgeInsets.all(8), child: Text('کد تست: $debugCode', textAlign: TextAlign.center)),
+          const SizedBox(height: 14),
+          TextField(controller: code, keyboardType: TextInputType.number, autofillHints: const [AutofillHints.oneTimeCode], textAlign: TextAlign.center, maxLength: 6, decoration: const InputDecoration(labelText: 'کد تأیید')),
+          FilledButton(onPressed: busy ? null : verify, child: const Text('تأیید و ساخت حساب')),
+          TextButton(onPressed: busy ? null : () => setState(() { challengeId = null; code.clear(); }), child: const Text('اصلاح اطلاعات')),
+        ],
+        if (err != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(err!, style: TextStyle(color: Theme.of(context).colorScheme.error))),
+      ]),
+    )))),
+  );
 }
 
 Future<DateTime?> showPersianDateTimePicker(
@@ -2105,131 +2165,145 @@ class MessagesPage extends StatefulWidget {
 }
 
 class _MessagesPageState extends State<MessagesPage> {
-  List<dynamic> convs = [];
-  List<dynamic> users = [];
-  List<dynamic> messages = [];
-  dynamic active;
-  final search = TextEditingController();
-  final message = TextEditingController();
-  Timer? poll;
+  List<dynamic> convs = [], users = [], messages = [], typing = [];
+  dynamic active, me, replyTo;
+  final search = TextEditingController(), message = TextEditingController(), messageSearch = TextEditingController();
+  Timer? poll, typingDebounce;
 
   @override
-  void initState() {
-    super.initState();
-    loadConvs();
-  }
-
-  Future<void> loadConvs() async {
-    final x = await Api.call('/chat/conversations');
-    if (mounted) setState(() => convs = x ?? []);
-  }
-
-  Future<void> searchUsers(String q) async {
-    if (q.trim().isEmpty) return setState(() => users = []);
-    final x = await Api.call('/users/search?q=${Uri.encodeComponent(q.trim())}');
-    if (mounted) setState(() => users = x ?? []);
-  }
-
-  Future<void> start(dynamic u) async {
-    final c = await Api.call('/conversations', method: 'POST', body: {'other_user_id': u['id']});
-    setState(() {
-      active = {'id': c['id'], 'peer': u};
-      users = [];
-      search.clear();
-    });
-    await loadMessages();
-    await loadConvs();
-  }
-
-  Future<void> open(dynamic c) async {
-    poll?.cancel();
-    setState(() => active = c);
-    await loadMessages();
-    poll = Timer.periodic(const Duration(seconds: 5), (_) => loadMessages());
-  }
-
+  void initState() { super.initState(); loadConvs(); Api.call('/me').then((x) { if (mounted) setState(() => me = x); }); }
+  Future<void> loadConvs() async { final x = await Api.call('/chat/conversations'); if (mounted) setState(() => convs = x ?? []); }
+  Future<void> searchUsers(String q) async { if (q.trim().isEmpty) return setState(() => users = []); final x = await Api.call('/users/search?q=${Uri.encodeComponent(q.trim())}'); if (mounted) setState(() => users = x ?? []); }
+  Future<void> start(dynamic u) async { final c = await Api.call('/conversations', method: 'POST', body: {'other_user_id': u['id']}); setState(() { active = {'id': c['id'], 'peer': u}; users = []; search.clear(); }); await _startPolling(); await loadConvs(); }
+  Future<void> open(dynamic c) async { setState(() => active = c); await _startPolling(); }
+  Future<void> _startPolling() async { poll?.cancel(); await loadMessages(); poll = Timer.periodic(const Duration(seconds: 2), (_) { loadMessages(); loadConvs(); }); }
   Future<void> loadMessages() async {
     if (active == null) return;
-    final x = await Api.call('/conversations/${active['id']}/messages');
-    if (mounted) setState(() => messages = x ?? []);
+    final q = messageSearch.text.trim();
+    final x = await Api.call('/conversations/${active['id']}/messages${q.isEmpty ? '' : '?q=${Uri.encodeComponent(q)}'}');
+    final t = await Api.call('/conversations/${active['id']}/typing').catchError((_) => []);
+    if (mounted) setState(() { messages = x ?? []; typing = t ?? []; });
   }
-
   Future<void> send() async {
     if (active == null || message.text.trim().isEmpty) return;
-    await Api.call('/conversations/${active['id']}/messages', method: 'POST', body: {'body': message.text.trim()});
-    message.clear();
-    await loadMessages();
-    await loadConvs();
+    await Api.call('/conversations/${active['id']}/messages', method: 'POST', body: {'body': message.text.trim(), 'reply_to_id': replyTo?['id']});
+    message.clear(); setState(() => replyTo = null); await _setTyping(false); await loadMessages(); await loadConvs();
   }
-
+  Future<void> _setTyping(bool value) async { if (active == null) return; try { await Api.call('/conversations/${active['id']}/typing', method: 'POST', body: {'typing': value}); } catch (_) {} }
+  void onTyping(String v) { typingDebounce?.cancel(); _setTyping(v.trim().isNotEmpty); typingDebounce = Timer(const Duration(seconds: 4), () => _setTyping(false)); }
+  Future<void> editMessage(dynamic m) async {
+    final c = TextEditingController(text: m['body'] ?? '');
+    final ok = await showDialog<bool>(context: context, builder: (d) => AlertDialog(title: const Text('ویرایش پیام'), content: TextField(controller: c, minLines: 2, maxLines: 6), actions: [TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('انصراف')), FilledButton(onPressed: () => Navigator.pop(d, true), child: const Text('ذخیره'))]));
+    if (ok == true && c.text.trim().isNotEmpty) { await Api.call('/conversations/${active['id']}/messages/${m['id']}', method: 'PATCH', body: {'body': c.text.trim()}); await loadMessages(); }
+    c.dispose();
+  }
+  Future<void> deleteMessage(dynamic m) async { await Api.call('/conversations/${active['id']}/messages/${m['id']}', method: 'DELETE'); await loadMessages(); }
   @override
-  void dispose() {
-    poll?.cancel();
-    search.dispose();
-    message.dispose();
-    super.dispose();
-  }
+  void dispose() { poll?.cancel(); typingDebounce?.cancel(); search.dispose(); message.dispose(); messageSearch.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     if (active != null) {
-      return Column(
-        children: [
-          ListTile(
-            leading: IconButton(onPressed: () { poll?.cancel(); setState(() => active = null); }, icon: const Icon(Icons.arrow_forward)),
-            title: Text(active['peer']?['name'] ?? 'گفتگو'),
-            subtitle: Text(active['peer']?['email'] ?? ''),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.all(12),
-              itemCount: messages.length,
-              itemBuilder: (_, i) => Card(elevation: 0, child: Padding(padding: const EdgeInsets.all(10), child: Text(messages[i]['body'] ?? ''))),
-            ),
-          ),
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.all(10),
-              child: Row(
-                children: [
-                  Expanded(child: TextField(controller: message, decoration: const InputDecoration(hintText: 'پیام بنویسید…'))),
-                  const SizedBox(width: 8),
-                  IconButton.filled(onPressed: send, icon: const Icon(Icons.send)),
-                ],
-              ),
-            ),
-          ),
-        ],
-      );
-    }
-    return ListView(
-      padding: const EdgeInsets.all(14),
-      children: [
-        TextField(
-          controller: search,
-          onChanged: searchUsers,
-          decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'نام یا ایمیل کاربر'),
+      return Column(children: [
+        ListTile(
+          leading: IconButton(onPressed: () { poll?.cancel(); setState(() { active = null; messages = []; typing = []; }); }, icon: const Icon(Icons.arrow_forward)),
+          title: Text(active['peer']?['name'] ?? 'گفتگو'), subtitle: Text(active['peer']?['email'] ?? active['peer']?['phone'] ?? ''),
+          trailing: IconButton(onPressed: loadMessages, icon: const Icon(Icons.refresh)),
         ),
-        if (users.isNotEmpty)
-          Card(
-            child: Column(
-              children: users.map((u) => ListTile(title: Text(u['name'] ?? ''), subtitle: Text(u['email'] ?? ''), onTap: () => start(u))).toList(),
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: TextField(controller: messageSearch, onChanged: (_) => loadMessages(), decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'جستجو در پیام‌ها'))),
+        const SizedBox(height: 6),
+        Expanded(child: ListView.builder(
+          padding: const EdgeInsets.all(12), itemCount: messages.length,
+          itemBuilder: (_, i) { final m = messages[i]; final mine = m['sender_id']?.toString() == me?['id']?.toString(); return Align(
+            alignment: mine ? Alignment.centerLeft : Alignment.centerRight,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 330), margin: const EdgeInsets.symmetric(vertical: 4), padding: const EdgeInsets.all(11),
+              decoration: BoxDecoration(color: mine ? Theme.of(context).colorScheme.primaryContainer : Colors.white, borderRadius: BorderRadius.circular(16), border: Border.all(color: const Color(0xffdfe7e1))),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                if (m['reply_to'] != null) Container(padding: const EdgeInsets.all(7), margin: const EdgeInsets.only(bottom: 6), decoration: BoxDecoration(color: Colors.black.withValues(alpha: .04), borderRadius: BorderRadius.circular(9)), child: Text(m['reply_to']['body'] ?? '', maxLines: 2, overflow: TextOverflow.ellipsis)),
+                Text(m['body'] ?? ''),
+                const SizedBox(height: 5),
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  Text('${m['edited_at'] != null ? 'ویرایش‌شده • ' : ''}${m['seen_at'] != null && mine ? 'دیده شد • ' : ''}${m['sent_at'] == null ? '' : DateTime.tryParse(m['sent_at'].toString())?.toLocal().toString().substring(11,16) ?? ''}', style: Theme.of(context).textTheme.bodySmall),
+                  const Spacer(),
+                  IconButton(iconSize: 16, visualDensity: VisualDensity.compact, onPressed: () => setState(() => replyTo = m), icon: const Icon(Icons.reply)),
+                  if (mine && m['deleted_at'] == null) PopupMenuButton<String>(padding: EdgeInsets.zero, iconSize: 17, onSelected: (v) => v == 'edit' ? editMessage(m) : deleteMessage(m), itemBuilder: (_) => const [PopupMenuItem(value: 'edit', child: Text('ویرایش')), PopupMenuItem(value: 'delete', child: Text('حذف'))]),
+                ]),
+              ]),
             ),
-          ),
-        const SizedBox(height: 8),
-        ...convs.map((c) => ListTile(
-              leading: CircleAvatar(child: Text(c['peer']?['name']?.toString().substring(0, 1) ?? 'U')),
-              title: Text(c['peer']?['name'] ?? 'کاربر'),
-              subtitle: Text(c['last_message']?['body'] ?? 'گفتگو را شروع کنید', maxLines: 1, overflow: TextOverflow.ellipsis),
-              trailing: (c['unread'] ?? 0) > 0 ? Badge(label: Text('${c['unread']}')) : null,
-              onTap: () => open(c),
-            )),
-      ],
-    );
+          ); },
+        )),
+        if (typing.isNotEmpty) Padding(padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4), child: Align(alignment: Alignment.centerRight, child: Text('${typing.map((x) => x['user']?['name']).where((x) => x != null).join('، ')} در حال تایپ…', style: Theme.of(context).textTheme.bodySmall))),
+        if (replyTo != null) Container(color: Theme.of(context).colorScheme.surfaceContainerHighest, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), child: Row(children: [Expanded(child: Text('پاسخ به: ${replyTo['body']}', maxLines: 1, overflow: TextOverflow.ellipsis)), IconButton(onPressed: () => setState(() => replyTo = null), icon: const Icon(Icons.close))])),
+        SafeArea(child: Padding(padding: const EdgeInsets.all(10), child: Row(children: [
+          Expanded(child: TextField(controller: message, onChanged: onTyping, minLines: 1, maxLines: 4, decoration: const InputDecoration(hintText: 'پیام بنویسید…'))),
+          const SizedBox(width: 8), IconButton.filled(onPressed: send, icon: const Icon(Icons.send)),
+        ]))),
+      ]);
+    }
+    return ListView(padding: const EdgeInsets.all(14), children: [
+      TextField(controller: search, onChanged: searchUsers, autofillHints: const <String>[], decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'نام، ایمیل یا شماره کاربر')),
+      if (users.isNotEmpty) Card(child: Column(children: users.map((u) => ListTile(title: Text(u['name'] ?? ''), subtitle: Text(u['email'] ?? u['phone'] ?? ''), onTap: () => start(u))).toList())),
+      const SizedBox(height: 8),
+      ...convs.map((c) => ListTile(
+        leading: CircleAvatar(child: Text(c['peer']?['name']?.toString().substring(0, 1) ?? 'U')),
+        title: Text(c['peer']?['name'] ?? 'کاربر'),
+        subtitle: Text(c['last_message']?['body'] ?? 'گفتگو را شروع کنید', maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: (c['unread'] ?? 0) > 0 ? Badge(label: Text('${c['unread']}')) : null,
+        onTap: () => open(c),
+      )),
+    ]);
   }
 }
 
+class ProfilePage extends StatefulWidget {
+  const ProfilePage({super.key});
+  @override
+  State<ProfilePage> createState() => _ProfilePageState();
+}
+
+class _ProfilePageState extends State<ProfilePage> {
+  final display = TextEditingController(), first = TextEditingController(), last = TextEditingController(), phone = TextEditingController(), avatar = TextEditingController();
+  String email = '';
+  bool busy = true;
+  String? msg;
+
+  @override
+  void initState() { super.initState(); load(); }
+  Future<void> load() async {
+    try {
+      final p = await Api.call('/profile');
+      display.text = (p['display_name'] ?? p['name'] ?? '').toString(); first.text = (p['first_name'] ?? '').toString(); last.text = (p['last_name'] ?? '').toString(); phone.text = (p['phone'] ?? '').toString(); avatar.text = (p['avatar_url'] ?? '').toString(); email = (p['email'] ?? '').toString();
+    } catch (e) { msg = e.toString(); }
+    if (mounted) setState(() => busy = false);
+  }
+  Future<void> save() async {
+    setState(() { busy = true; msg = null; });
+    try {
+      await Api.call('/profile', method: 'PUT', body: {'display_name': display.text.trim(), 'first_name': first.text.trim(), 'last_name': last.text.trim(), 'phone': phone.text.trim(), 'avatar_url': avatar.text.trim()});
+      msg = 'پروفایل ذخیره شد.';
+    } catch (e) { msg = e.toString().replaceFirst('Exception: ', ''); }
+    if (mounted) setState(() => busy = false);
+  }
+  @override
+  void dispose() { for (final c in [display, first, last, phone, avatar]) { c.dispose(); } super.dispose(); }
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('پروفایل من')),
+    body: SafeArea(child: ListView(padding: const EdgeInsets.all(16), children: [
+      Card(child: Padding(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const CircleAvatar(radius: 34, child: Icon(Icons.person_outline, size: 34)), const SizedBox(height: 14),
+        TextField(controller: display, autofillHints: const <String>[], enableSuggestions: false, autocorrect: false, decoration: const InputDecoration(labelText: 'نام نمایشی')),
+        const SizedBox(height: 10), Row(children: [Expanded(child: TextField(controller: first, autofillHints: const <String>[], enableSuggestions: false, autocorrect: false, decoration: const InputDecoration(labelText: 'نام'))), const SizedBox(width: 8), Expanded(child: TextField(controller: last, autofillHints: const <String>[], enableSuggestions: false, autocorrect: false, decoration: const InputDecoration(labelText: 'نام خانوادگی')))]),
+        const SizedBox(height: 10), TextFormField(initialValue: email, enabled: false, decoration: const InputDecoration(labelText: 'ایمیل')),
+        const SizedBox(height: 10), TextField(controller: phone, keyboardType: TextInputType.phone, autofillHints: const <String>[], decoration: const InputDecoration(labelText: 'شماره همراه')),
+        const SizedBox(height: 10), TextField(controller: avatar, autofillHints: const <String>[], decoration: const InputDecoration(labelText: 'آدرس تصویر پروفایل')),
+        const SizedBox(height: 14), FilledButton.icon(onPressed: busy ? null : save, icon: const Icon(Icons.save_outlined), label: Text(busy ? 'در حال ذخیره…' : 'ذخیره پروفایل')),
+        if (msg != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(msg!, textAlign: TextAlign.center)),
+      ]))),
+    ])),
+  );
+}
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -2292,6 +2366,14 @@ class SettingsPage extends StatelessWidget {
               ),
             ]),
           ),
+          const SizedBox(height: 22),
+          Card(child: ListTile(
+            leading: const CircleAvatar(child: Icon(Icons.person_outline)),
+            title: const Text('پروفایل من'),
+            subtitle: const Text('نام، شماره همراه و تصویر پروفایل'),
+            trailing: const Icon(Icons.chevron_left),
+            onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProfilePage())),
+          )),
           const SizedBox(height: 22),
           const _SettingsTitle(icon: Icons.widgets_outlined, title: 'ویجت‌های صفحه اصلی', subtitle: 'هر ویجت را جداگانه به Home Screen اضافه کنید'),
           const SizedBox(height: 10),

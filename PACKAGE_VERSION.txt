@@ -1,5 +1,10 @@
-Planner Android 1.5.0+17
-- Calendar: Today button, direct month/year selection, year/month navigation
-- Notifications: native Android reminder one day before due date at 17:00 local time
-- Reminders restored after reboot/app update
-- Existing RTL official 1405 calendar, widgets, workspace, token refresh and security retained
+Planner Android 1.6.0+18
+
+- Registration from login screen with email or phone.
+- OTP confirmation is mandatory before account activation.
+- Registration methods follow server/admin switches.
+- Login/name fields hardened against unwanted autocomplete suggestions.
+- User profile page added.
+- Workspace shared boards/documents retained and server shared-items API supported by 1.7 backend.
+- Chat auto-refresh every 2 seconds, typing indicator, reply, edit, delete, seen and message search.
+- Existing RTL calendar, official 1405 holidays, widgets, reminders, secure token refresh and Android Keystore retained.

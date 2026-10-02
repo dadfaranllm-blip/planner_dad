@@ -1,0 +1,6 @@
+Planner Android 1.6.0 validation
+- Source identity/static integration checks: PASS
+- Delimiter balance check (Dart source): PASS
+- GitHub workflow pins Flutter 3.47.5 / Java 17 and runs flutter analyze, flutter test, APK/AAB build, final APK manifest verification.
+- Native Android integration from prepare_android.py retained: widgets, Keystore token store, notifications, HTTPS hardening.
+- Full Flutter compile is intentionally performed by the included GitHub Actions workflow.

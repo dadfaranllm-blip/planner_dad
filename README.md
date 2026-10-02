@@ -1,12 +1,17 @@
-# Planner Android 1.5.0+17
+# Planner Android 1.6.0+18
 
-## New in this release
-- Calendar **Today** button.
-- Direct Persian month/year selection plus month/year navigation controls.
-- Native Android notifications for dated tasks/events: **one day before at 17:00 local device time**.
-- Notification permission request on Android 13+.
-- Reminder schedule restored after reboot and package replacement.
-- Existing official 1405 occasions/holidays, RTL calendar, workspace collaboration, four widgets, refresh-token flow and Android Keystore storage retained.
+This release adds verified registration, profiles and a more capable chat/workspace experience.
+
+## Account
+- Sign up from the login screen.
+- Email or phone registration, depending on the Admin setting.
+- Mandatory one-time verification code before activation.
+- Secure login fields with unwanted autofill/suggestions disabled for identity/name fields.
+- Profile page: display name, first/last name, phone and avatar URL.
+
+## Collaboration & chat
+- Workspace members can use shared board/documents; backend 1.7 also exposes shared item and room-chat APIs.
+- Direct chat polls every 2 seconds and includes typing, reply, edit/delete, seen and message search.
 
 ## Build
-Use `.github/workflows/android-build.yml` (Planner Android Build 1.5.0).
+Use `.github/workflows/android-build.yml` (`Planner Android Build 1.6.0`).
