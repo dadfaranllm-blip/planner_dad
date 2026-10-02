@@ -1,4 +1,4 @@
-name: Planner Android Build 1.3.0
+name: Planner Android Build 1.4.0
 
 on:
   workflow_dispatch:
@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
-      EXPECTED_VERSION_NAME: "1.3.0"
-      EXPECTED_VERSION_CODE: "15"
+      EXPECTED_VERSION_NAME: "1.4.0"
+      EXPECTED_VERSION_CODE: "16"
       API_BASE_URL: "https://planner.datholding.ir/api"
 
     steps:
@@ -51,6 +51,9 @@ jobs:
           grep -q "ساعت و تاریخ بزرگ" lib/main.dart
           grep -q "TextDirection.rtl" lib/main.dart
           grep -q "securityChannel" lib/main.dart
+          grep -q "/auth/refresh" lib/main.dart
+          grep -q "official-calendar" lib/main.dart
+          grep -q "bottomNavigationBar: SafeArea" lib/main.dart
           echo "SOURCE IDENTITY OK: ${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
 
       - name: Generate clean Android host
@@ -86,7 +89,10 @@ jobs:
           find android/app/src/main/kotlin -name SecureTokenStore.kt -print -quit | grep -q .
           grep -Rqs 'AndroidKeyStore' android/app/src/main/kotlin
           grep -Rqs 'AES/GCM/NoPadding' android/app/src/main/kotlin
-          echo "4 WIDGETS + KEYSTORE + NETWORK HARDENING OK"
+          grep -Rqs 'layoutDirection="rtl"' android/app/src/main/res/layout/planner_widget_tasks.xml
+          grep -Rqs 'textSize="24sp"' android/app/src/main/res/layout/planner_widget_tasks.xml
+          test -f android/app/src/main/res/drawable/planner_widget_section_bg.xml
+          echo "4 RTL WIDGETS + KEYSTORE REFRESH + NETWORK HARDENING OK"
 
       - name: Normalize scaffold test
         shell: bash
@@ -152,7 +158,8 @@ jobs:
             echo "Planner Android ${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
             echo "Git commit: $GITHUB_SHA"
             echo "Widgets: overview, clock/date, tasks, agenda"
-            echo "Security: Android Keystore AES-GCM; cleartext disabled; backup disabled"
+            echo "Security: Android Keystore AES-GCM; refresh-token rotation; cleartext disabled; backup disabled"
+            echo "Calendar: official 1405 occasions/holidays; RTL Saturday-to-Friday"
             echo "Workspace client: collaborative autosave/poll/merge"
             cat SHA256SUMS.txt
           } > BUILD-VERIFICATION.txt
@@ -160,7 +167,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-APK-1.3.0
+          name: Planner-Android-APK-1.4.0
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
@@ -168,7 +175,7 @@ jobs:
       - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-AAB-1.3.0
+          name: Planner-Android-AAB-1.4.0
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 14
@@ -176,7 +183,7 @@ jobs:
       - name: Upload verification
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-Verification-1.3.0
+          name: Planner-Android-Verification-1.4.0
           path: |
             final-apk-badging.txt
             final-apk-manifest.txt
