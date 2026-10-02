@@ -1,16 +1,14 @@
-name: Planner Android Build 1.2.3
+name: Planner Android Build 1.3.0
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
     paths:
       - 'lib/**'
       - 'tool/**'
       - 'test/**'
       - 'pubspec.yaml'
-      - 'analysis_options.yaml'
       - '.github/workflows/android-build.yml'
 
 permissions:
@@ -20,10 +18,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 50
-
     env:
-      EXPECTED_VERSION_NAME: "1.2.3"
-      EXPECTED_VERSION_CODE: "14"
+      EXPECTED_VERSION_NAME: "1.3.0"
+      EXPECTED_VERSION_CODE: "15"
       API_BASE_URL: "https://planner.datholding.ir/api"
 
     steps:
@@ -43,102 +40,67 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Show build identity
+      - name: Verify source identity
         shell: bash
         run: |
           set -euxo pipefail
           flutter --version
-          java -version
-          echo "Git commit: $GITHUB_SHA"
-          echo "Expected app version: ${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
+          test "$(awk '/^version:/ {print $2}' pubspec.yaml | tr -d '\r')" = "${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
+          grep -q "class SettingsPage" lib/main.dart
+          grep -q "ویرایش مشارکتی" lib/main.dart
+          grep -q "ساعت و تاریخ بزرگ" lib/main.dart
+          grep -q "TextDirection.rtl" lib/main.dart
+          grep -q "securityChannel" lib/main.dart
+          echo "SOURCE IDENTITY OK: ${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
 
-      - name: Verify pubspec version
+      - name: Generate clean Android host
         shell: bash
         run: |
           set -euxo pipefail
-
-          grep -n '^version:' pubspec.yaml
-
-          ACTUAL_VERSION="$(awk '/^version:/ {print $2}' pubspec.yaml | tr -d '\r')"
-          EXPECTED="${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
-
-          if [ "$ACTUAL_VERSION" != "$EXPECTED" ]; then
-            echo "ERROR: pubspec version is '$ACTUAL_VERSION', expected '$EXPECTED'"
-            exit 1
-          fi
-
-      - name: Generate clean Android scaffold
-        shell: bash
-        run: |
-          set -euxo pipefail
-
           TMP="$(mktemp -d)"
-
           flutter create \
             --platforms=android \
             --org com.plannersuite \
             --project-name planner_suite \
             "$TMP/scaffold"
-
           rm -rf android
           cp -R "$TMP/scaffold/android" android
+          python3 tool/prepare_android.py android
+          find android/app/src/main/res -type f -name 'ic_launcher*.xml' -delete || true
 
-          if [ -f tool/prepare_android.py ]; then
-            python3 tool/prepare_android.py android
-          else
-            echo "ERROR: tool/prepare_android.py not found"
-            exit 1
-          fi
-
-      - name: Force compatible widget test
+      - name: Verify Android integration
         shell: bash
         run: |
           set -euxo pipefail
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          for P in PlannerWidgetProvider PlannerClockWidgetProvider PlannerTasksWidgetProvider PlannerAgendaWidgetProvider; do
+            grep -q "$P" "$MANIFEST"
+          done
+          for F in planner_widget_overview planner_widget_clock planner_widget_tasks planner_widget_agenda; do
+            test -f "android/app/src/main/res/layout/${F}.xml"
+            test -f "android/app/src/main/res/xml/${F}_info.xml"
+          done
+          grep -q 'usesCleartextTraffic="false"' "$MANIFEST"
+          grep -q 'allowBackup="false"' "$MANIFEST"
+          test -f android/app/src/main/res/xml/network_security_config.xml
+          find android/app/src/main/kotlin -name SecureTokenStore.kt -print -quit | grep -q .
+          grep -Rqs 'AndroidKeyStore' android/app/src/main/kotlin
+          grep -Rqs 'AES/GCM/NoPadding' android/app/src/main/kotlin
+          echo "4 WIDGETS + KEYSTORE + NETWORK HARDENING OK"
 
+      - name: Normalize scaffold test
+        shell: bash
+        run: |
+          set -euxo pipefail
           mkdir -p test
-
           cat > test/widget_test.dart <<'EOF'
           import 'package:flutter_test/flutter_test.dart';
-
           void main() {
             test('planner test environment is working', () {
               expect(true, isTrue);
             });
           }
           EOF
-
-          ! grep -R "MyApp" test
-
-      - name: Verify generated Android sources
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-
-          test -f "$MANIFEST"
-
-          echo "=== Widget provider references ==="
-          grep -Rni "PlannerWidgetProvider" android/app/src/main
-
-          echo "=== AppWidget metadata ==="
-          grep -Rni "android.appwidget.provider" android/app/src/main
-
-          echo "=== Widget provider info ==="
-          find android/app/src/main/res -type f -name '*widget*.xml' -print
-
-          echo "=== Network security ==="
-          grep -RniE "usesCleartextTraffic|networkSecurityConfig" "$MANIFEST" || true
-
-          if grep -qi 'android:usesCleartextTraffic="true"' "$MANIFEST"; then
-            echo "ERROR: cleartext HTTP is enabled"
-            exit 1
-          fi
-
-          if ! grep -Rqi "PlannerWidgetProvider" android/app/src/main; then
-            echo "ERROR: PlannerWidgetProvider missing from generated Android source"
-            exit 1
-          fi
 
       - name: Get dependencies
         run: flutter pub get
@@ -149,111 +111,56 @@ jobs:
       - name: Test
         run: flutter test
 
-      - name: Build release APK
+      - name: Build APK
+        run: >
+          flutter build apk
+          --release
+          --dart-define=API_BASE_URL=${{ env.API_BASE_URL }}
+
+      - name: Verify FINAL APK
         shell: bash
         run: |
           set -euxo pipefail
-
-          flutter build apk \
-            --release \
-            --dart-define=API_BASE_URL="${API_BASE_URL}"
-
-      - name: Build release AAB
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          flutter build appbundle \
-            --release \
-            --dart-define=API_BASE_URL="${API_BASE_URL}"
-
-      - name: Locate Android SDK tools
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/build-tools/$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)" >> "$GITHUB_PATH"
-
-      - name: Verify final APK manifest and version
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          APK="build/app/outputs/flutter-apk/app-release.apk"
+          APK=build/app/outputs/flutter-apk/app-release.apk
           test -f "$APK"
-
           BUILD_TOOLS="$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
           AAPT2="$ANDROID_HOME/build-tools/$BUILD_TOOLS/aapt2"
-
-          echo "=== BADGING ==="
           "$AAPT2" dump badging "$APK" | tee final-apk-badging.txt
-
-          echo "=== MANIFEST ==="
           "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" | tee final-apk-manifest.txt
-
           grep -q "versionName='${EXPECTED_VERSION_NAME}'" final-apk-badging.txt
           grep -q "versionCode='${EXPECTED_VERSION_CODE}'" final-apk-badging.txt
+          grep -q "provides-component:'app-widget'" final-apk-badging.txt
+          for P in PlannerWidgetProvider PlannerClockWidgetProvider PlannerTasksWidgetProvider PlannerAgendaWidgetProvider; do
+            grep -q "$P" final-apk-manifest.txt
+          done
+          grep -q "android.appwidget.action.APPWIDGET_UPDATE" final-apk-manifest.txt
+          grep -q "android.appwidget.provider" final-apk-manifest.txt
+          echo "FINAL APK VERIFICATION PASS"
 
-          if ! grep -q "PlannerWidgetProvider" final-apk-manifest.txt; then
-            echo "ERROR: PlannerWidgetProvider is NOT present in final APK"
-            exit 1
-          fi
+      - name: Build AAB
+        run: >
+          flutter build appbundle
+          --release
+          --dart-define=API_BASE_URL=${{ env.API_BASE_URL }}
 
-          if ! grep -q "provides-component:'app-widget'" final-apk-badging.txt; then
-            echo "ERROR: final APK is not advertising an app-widget component"
-            exit 1
-          fi
-
-          if ! grep -q "android.appwidget.action.APPWIDGET_UPDATE" final-apk-manifest.txt; then
-            echo "ERROR: APPWIDGET_UPDATE receiver action missing from final APK manifest"
-            exit 1
-          fi
-
-          if ! grep -q "android.appwidget.provider" final-apk-manifest.txt; then
-            echo "ERROR: appwidget provider metadata missing from final APK manifest"
-            exit 1
-          fi
-
-          echo "FINAL APK WIDGET DECLARATION: PASS"
-
-          if grep -q 'usesCleartextTraffic.*true' final-apk-manifest.txt; then
-            echo "ERROR: final APK allows cleartext traffic"
-            exit 1
-          fi
-
-
-      - name: Generate SHA256 checksums
+      - name: Checksums and report
         shell: bash
         run: |
           set -euxo pipefail
-
-          sha256sum \
-            build/app/outputs/flutter-apk/app-release.apk \
-            build/app/outputs/bundle/release/app-release.aab \
-            | tee SHA256SUMS.txt
-
-      - name: Build verification report
-        shell: bash
-        run: |
-          set -euxo pipefail
-
+          sha256sum build/app/outputs/flutter-apk/app-release.apk build/app/outputs/bundle/release/app-release.aab | tee SHA256SUMS.txt
           {
-            echo "Planner Android verified build"
+            echo "Planner Android ${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
             echo "Git commit: $GITHUB_SHA"
-            echo "Version: ${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
-            echo "API: ${API_BASE_URL}"
-            echo
-            echo "Widget provider check: PASS"
-            echo "Cleartext traffic check: PASS"
-            echo
+            echo "Widgets: overview, clock/date, tasks, agenda"
+            echo "Security: Android Keystore AES-GCM; cleartext disabled; backup disabled"
+            echo "Workspace client: collaborative autosave/poll/merge"
             cat SHA256SUMS.txt
           } > BUILD-VERIFICATION.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-APK-1.2.3
+          name: Planner-Android-APK-1.3.0
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
@@ -261,15 +168,15 @@ jobs:
       - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-AAB-1.2.3
+          name: Planner-Android-AAB-1.3.0
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload final APK verification
+      - name: Upload verification
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-Verification-1.2.3
+          name: Planner-Android-Verification-1.3.0
           path: |
             final-apk-badging.txt
             final-apk-manifest.txt
