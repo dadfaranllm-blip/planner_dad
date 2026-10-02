@@ -1,4 +1,4 @@
-name: Planner Android Build 1.5.0
+name: Planner Android Build 1.6.0
 
 on:
   workflow_dispatch:
@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
-      EXPECTED_VERSION_NAME: "1.5.0"
-      EXPECTED_VERSION_CODE: "17"
+      EXPECTED_VERSION_NAME: "1.6.0"
+      EXPECTED_VERSION_CODE: "18"
       API_BASE_URL: "https://planner.datholding.ir/api"
 
     steps:
@@ -57,6 +57,9 @@ jobs:
           grep -q "FilledButton.tonal(onPressed: goToday" lib/main.dart
           grep -q "chooseMonthYear" lib/main.dart
           grep -q "bottomNavigationBar: SafeArea" lib/main.dart
+          grep -q "/auth/register/start" lib/main.dart
+          grep -q "class ProfilePage" lib/main.dart
+          grep -q "/typing" lib/main.dart
           echo "SOURCE IDENTITY OK: ${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
 
       - name: Generate clean Android host
@@ -171,14 +174,16 @@ jobs:
             echo "Security: Android Keystore AES-GCM; refresh-token rotation; cleartext disabled; backup disabled"
             echo "Calendar: official 1405 occasions/holidays; RTL Saturday-to-Friday; Today button + direct month/year jump"
             echo "Notifications: local Android reminder one day before at 17:00; boot restore enabled"
-            echo "Workspace client: collaborative autosave/poll/merge"
+            echo "Workspace client: collaborative board/documents; backend shared-items/room API compatible"
+            echo "Auth: email/phone OTP registration + profile"
+            echo "Chat: 2s refresh + typing + reply + edit/delete + seen + search"
             cat SHA256SUMS.txt
           } > BUILD-VERIFICATION.txt
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-APK-1.5.0
+          name: Planner-Android-APK-1.6.0
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
@@ -186,7 +191,7 @@ jobs:
       - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-AAB-1.5.0
+          name: Planner-Android-AAB-1.6.0
           path: build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 14
@@ -194,7 +199,7 @@ jobs:
       - name: Upload verification
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-Verification-1.5.0
+          name: Planner-Android-Verification-1.6.0
           path: |
             final-apk-badging.txt
             final-apk-manifest.txt
