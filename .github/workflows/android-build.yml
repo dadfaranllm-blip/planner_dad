@@ -190,13 +190,18 @@ jobs:
           "$AAPT2" dump badging "$APK" | tee final-apk-badging.txt
 
           echo "=== MANIFEST ==="
-          "$AAPT2" dump xmltree "$APK" AndroidManifest.xml | tee final-apk-manifest.txt
+          "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" | tee final-apk-manifest.txt
 
           grep -q "versionName='${EXPECTED_VERSION_NAME}'" final-apk-badging.txt
           grep -q "versionCode='${EXPECTED_VERSION_CODE}'" final-apk-badging.txt
 
           if ! grep -q "PlannerWidgetProvider" final-apk-manifest.txt; then
             echo "ERROR: PlannerWidgetProvider is NOT present in final APK"
+            exit 1
+          fi
+
+          if ! grep -q "provides-component:'app-widget'" final-apk-badging.txt; then
+            echo "ERROR: final APK is not advertising an app-widget component"
             exit 1
           fi
 
