@@ -205,24 +205,23 @@ jobs:
             exit 1
           fi
 
+          if ! grep -q "android.appwidget.action.APPWIDGET_UPDATE" final-apk-manifest.txt; then
+            echo "ERROR: APPWIDGET_UPDATE receiver action missing from final APK manifest"
+            exit 1
+          fi
+
+          if ! grep -q "android.appwidget.provider" final-apk-manifest.txt; then
+            echo "ERROR: appwidget provider metadata missing from final APK manifest"
+            exit 1
+          fi
+
+          echo "FINAL APK WIDGET DECLARATION: PASS"
+
           if grep -q 'usesCleartextTraffic.*true' final-apk-manifest.txt; then
             echo "ERROR: final APK allows cleartext traffic"
             exit 1
           fi
 
-      - name: Verify widget files inside APK
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          APK="build/app/outputs/flutter-apk/app-release.apk"
-
-          unzip -l "$APK" | tee final-apk-files.txt
-
-          if ! grep -qi "widget" final-apk-files.txt; then
-            echo "ERROR: no widget resources found in final APK"
-            exit 1
-          fi
 
       - name: Generate SHA256 checksums
         shell: bash
@@ -274,7 +273,6 @@ jobs:
           path: |
             final-apk-badging.txt
             final-apk-manifest.txt
-            final-apk-files.txt
             SHA256SUMS.txt
             BUILD-VERIFICATION.txt
           if-no-files-found: error
