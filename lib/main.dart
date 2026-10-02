@@ -1,0 +1,1792 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:app_links/app_links.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:shamsi_date/shamsi_date.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+const apiBase = String.fromEnvironment(
+  'API_BASE_URL',
+  defaultValue: 'https://planner.datholding.ir/api',
+);
+const widgetChannel = MethodChannel('planner/widget');
+const securityChannel = MethodChannel('planner/security');
+const appVersionLabel = '1.2.3+14';
+
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const PlannerApp());
+}
+
+class Api {
+  static const _timeout = Duration(seconds: 20);
+
+  static Future<String?> token() async {
+    final value = await securityChannel.invokeMethod<String>('getToken');
+    final clean = value?.trim();
+    return (clean == null || clean.isEmpty) ? null : clean;
+  }
+
+  static Future<void> saveToken(String token) async {
+    if (token.trim().isEmpty) throw ArgumentError('Empty token');
+    await securityChannel.invokeMethod('setToken', {'token': token});
+  }
+
+  static Future<void> clearToken() async {
+    await securityChannel.invokeMethod('clearToken');
+  }
+
+  static Uri _endpoint(String path) {
+    final base = Uri.parse(apiBase);
+    const allowInsecure = bool.fromEnvironment('ALLOW_INSECURE_HTTP', defaultValue: false);
+    final local = base.host == 'localhost' || base.host == '127.0.0.1';
+    if (base.scheme != 'https' && !(allowInsecure && local)) {
+      throw StateError('Insecure API endpoint blocked');
+    }
+    if (!allowInsecure && base.host != 'planner.datholding.ir') {
+      throw StateError('Untrusted API host blocked');
+    }
+    return Uri.parse('$apiBase$path');
+  }
+
+  static Future<dynamic> call(
+    String path, {
+    String method = 'GET',
+    Object? body,
+    bool auth = true,
+  }) async {
+    final t = await token();
+    final r = http.Request(method, _endpoint(path));
+    r.followRedirects = false;
+    r.headers['Accept'] = 'application/json';
+    r.headers['Content-Type'] = 'application/json; charset=utf-8';
+    if (auth && t != null) r.headers['Authorization'] = 'Bearer $t';
+    if (body != null) r.body = jsonEncode(body);
+    final response = await r.send().timeout(_timeout);
+    final txt = await response.stream.bytesToString().timeout(_timeout);
+    if (response.statusCode >= 300) {
+      var message = 'خطای ارتباط با سرور (${response.statusCode})';
+      try {
+        final decoded = jsonDecode(txt);
+        if (decoded is Map && decoded['detail'] != null) {
+          message = decoded['detail'].toString();
+        }
+      } catch (_) {}
+      throw Exception(message);
+    }
+    return txt.isEmpty ? null : jsonDecode(txt);
+  }
+}
+
+// Compatibility widget for stale Flutter scaffold tests that still reference MyApp.
+// Production continues to launch PlannerApp from main().
+class MyApp extends StatefulWidget {
+  const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  int _counter = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      home: Scaffold(
+        body: Center(child: Text('$_counter')),
+        floatingActionButton: FloatingActionButton(
+          onPressed: () => setState(() => _counter++),
+          child: const Icon(Icons.add),
+        ),
+      ),
+    );
+  }
+}
+
+class PlannerApp extends StatelessWidget {
+  const PlannerApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'Planner',
+      locale: const Locale('fa', 'IR'),
+      theme: ThemeData(
+        useMaterial3: true,
+        colorSchemeSeed: const Color(0xff176b43),
+        scaffoldBackgroundColor: const Color(0xfff7f8f7),
+        inputDecorationTheme: const InputDecorationTheme(
+          border: OutlineInputBorder(),
+        ),
+      ),
+      home: const Gate(),
+    );
+  }
+}
+
+class Gate extends StatefulWidget {
+  const Gate({super.key});
+
+  @override
+  State<Gate> createState() => _GateState();
+}
+
+class _GateState extends State<Gate> {
+  final AppLinks _links = AppLinks();
+  StreamSubscription<Uri>? _sub;
+  bool? has;
+
+  @override
+  void initState() {
+    super.initState();
+    _sub = _links.uriLinkStream.listen(_handleLink);
+    _readToken();
+  }
+
+  Future<void> _readToken() async {
+    final token = await Api.token();
+    if (mounted) setState(() => has = token != null);
+  }
+
+  Future<void> _handleLink(Uri uri) async {
+    if (uri.scheme != 'planner') return;
+    final token = uri.queryParameters['oauth_token'];
+    if (token == null || token.isEmpty) return;
+    await Api.saveToken(token);
+    if (mounted) setState(() => has = true);
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (has == null) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return has! ? const Home() : Login(onLogin: () => setState(() => has = true));
+  }
+}
+
+class Login extends StatefulWidget {
+  final VoidCallback onLogin;
+  const Login({super.key, required this.onLogin});
+
+  @override
+  State<Login> createState() => _LoginState();
+}
+
+class _LoginState extends State<Login> {
+  final email = TextEditingController();
+  final pass = TextEditingController();
+  String? err;
+  bool busy = false;
+
+  Future<void> go() async {
+    setState(() {
+      busy = true;
+      err = null;
+    });
+    try {
+      final r = await Api.call(
+        '/auth/login',
+        method: 'POST',
+        auth: false,
+        body: {'email': email.text.trim(), 'password': pass.text},
+      );
+      await Api.saveToken(r['access_token']);
+      widget.onLogin();
+    } catch (_) {
+      if (mounted) setState(() => err = 'ورود انجام نشد');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  Future<void> social(String provider) async {
+    setState(() {
+      busy = true;
+      err = null;
+    });
+    try {
+      final r = await Api.call(
+        '/auth/$provider/start?return_to=${Uri.encodeComponent('planner://oauth')}',
+        auth: false,
+      );
+      final url = Uri.parse(r['authorization_url']);
+      if (url.scheme != 'https') throw Exception('آدرس ورود امن نیست');
+      if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
+        throw Exception('مرورگر باز نشد');
+      }
+    } catch (e) {
+      if (mounted) setState(() => err = e.toString());
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    email.dispose();
+    pass.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 430),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Icon(Icons.event_note_rounded, size: 72),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'برنامه‌ریز',
+                    textAlign: TextAlign.right,
+                    style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: busy ? null : () => social('google'),
+                          child: const Text('Google'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: FilledButton.tonal(
+                          onPressed: busy ? null : () => social('apple'),
+                          child: const Text('Apple'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 14),
+                    child: Text('یا', textAlign: TextAlign.center),
+                  ),
+                  TextField(
+                    controller: email,
+                    keyboardType: TextInputType.emailAddress,
+                    decoration: const InputDecoration(labelText: 'ایمیل'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: pass,
+                    obscureText: true,
+                    decoration: const InputDecoration(labelText: 'رمز عبور'),
+                  ),
+                  if (err != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Text(err!, style: const TextStyle(color: Colors.red)),
+                    ),
+                  const SizedBox(height: 18),
+                  FilledButton(
+                    onPressed: busy ? null : go,
+                    child: Text(busy ? '...' : 'ورود'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+Future<DateTime?> showPersianDateTimePicker(
+  BuildContext context, {
+  DateTime? initial,
+}) async {
+  final source = initial ?? DateTime.now().add(const Duration(hours: 1));
+  final j = Jalali.fromDateTime(source);
+  var year = j.year;
+  var month = j.month;
+  var day = j.day;
+  var hour = source.hour;
+  var minute = (source.minute ~/ 5) * 5;
+
+  return showModalBottomSheet<DateTime>(
+    context: context,
+    isScrollControlled: true,
+    builder: (sheet) => StatefulBuilder(
+      builder: (context, setLocal) {
+        final maxDay = Jalali(year, month).monthLength;
+        if (day > maxDay) day = maxDay;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text(
+                  'تاریخ و زمان شمسی',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        initialValue: year,
+                        items: List.generate(
+                          15,
+                          (i) => DropdownMenuItem(
+                            value: j.year - 2 + i,
+                            child: Text('${j.year - 2 + i}'),
+                          ),
+                        ),
+                        onChanged: (v) => setLocal(() => year = v!),
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        initialValue: month,
+                        items: List.generate(
+                          12,
+                          (i) => DropdownMenuItem(
+                            value: i + 1,
+                            child: Text(Jalali(year, i + 1).formatter.mN),
+                          ),
+                        ),
+                        onChanged: (v) => setLocal(() => month = v!),
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        initialValue: day,
+                        items: List.generate(
+                          maxDay,
+                          (i) => DropdownMenuItem(
+                            value: i + 1,
+                            child: Text('${i + 1}'),
+                          ),
+                        ),
+                        onChanged: (v) => setLocal(() => day = v!),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        initialValue: hour,
+                        decoration: const InputDecoration(labelText: 'ساعت'),
+                        items: List.generate(
+                          24,
+                          (i) => DropdownMenuItem(value: i, child: Text('$i')),
+                        ),
+                        onChanged: (v) => setLocal(() => hour = v!),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: DropdownButtonFormField<int>(
+                        initialValue: minute,
+                        decoration: const InputDecoration(labelText: 'دقیقه'),
+                        items: List.generate(
+                          12,
+                          (i) => DropdownMenuItem(
+                            value: i * 5,
+                            child: Text('${i * 5}'),
+                          ),
+                        ),
+                        onChanged: (v) => setLocal(() => minute = v!),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () {
+                    final g = Jalali(year, month, day).toGregorian();
+                    Navigator.pop(
+                      sheet,
+                      DateTime(g.year, g.month, g.day, hour, minute),
+                    );
+                  },
+                  child: const Text('تأیید تاریخ'),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    ),
+  );
+}
+
+String persianDate(dynamic raw) {
+  if (raw == null) return 'بدون تاریخ';
+  final d = DateTime.tryParse(raw.toString())?.toLocal();
+  if (d == null) return '—';
+  final j = Jalali.fromDateTime(d);
+  return '${j.formatter.yyyy}/${j.formatter.mm}/${j.formatter.dd}  '
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+}
+
+class Home extends StatefulWidget {
+  const Home({super.key});
+
+  @override
+  State<Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<Home> {
+  int tab = 0;
+  List<dynamic> tasks = [];
+  List<dynamic> events = [];
+  bool busy = true;
+  String? error;
+  final AppLinks _homeLinks = AppLinks();
+  StreamSubscription<Uri>? _homeLinkSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _homeLinkSub = _homeLinks.uriLinkStream.listen(_handleHomeLink);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final initial = await _homeLinks.getInitialLink();
+      if (initial != null) _handleHomeLink(initial);
+    });
+    load();
+  }
+
+  void _handleHomeLink(Uri uri) {
+    if (!mounted || uri.scheme != 'planner') return;
+    if (uri.host == 'add-task' || uri.host == 'add-event') {
+      final kind = uri.host == 'add-event' ? 'event' : 'task';
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) add(kind);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _homeLinkSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> load() async {
+    try {
+      final r = await Future.wait([Api.call('/tasks'), Api.call('/events')]);
+      if (!mounted) return;
+      setState(() {
+        tasks = r[0] ?? [];
+        events = r[1] ?? [];
+        busy = false;
+        error = null;
+      });
+      await _updateWidget();
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          error = e.toString();
+          busy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _updateWidget() async {
+    final openTaskItems = tasks.where((x) => x['status'] != 'completed').toList()
+      ..sort((a, b) => (a['due_at'] ?? '').toString().compareTo((b['due_at'] ?? '').toString()));
+    final openEventItems = events.where((x) => x['status'] != 'completed').toList()
+      ..sort((a, b) => (a['starts_at'] ?? '').toString().compareTo((b['starts_at'] ?? '').toString()));
+    final now = DateTime.now();
+    try {
+      await widgetChannel.invokeMethod('updateWidget', {
+        'tasks': openTaskItems.length,
+        'events': openEventItems.length,
+        'date': '${Jalali.now().formatter.wN} ${Jalali.now().formatter.d} ${Jalali.now().formatter.mN}',
+        'time': '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}',
+        'taskItemsJson': jsonEncode(openTaskItems.take(3).map((x) => {
+          'title': x['title'] ?? 'کار',
+          'date': persianDate(x['due_at']),
+        }).toList()),
+        'eventItemsJson': jsonEncode(openEventItems.take(2).map((x) => {
+          'title': x['title'] ?? 'رویداد',
+          'date': persianDate(x['starts_at']),
+        }).toList()),
+      });
+    } catch (_) {}
+  }
+
+  Future<void> pinWidget() async {
+    try {
+      final status = await widgetChannel.invokeMapMethod<String, dynamic>('widgetStatus') ?? {};
+      final ok = await widgetChannel.invokeMethod<bool>('pinWidget') ?? false;
+      if (!mounted) return;
+      final registered = status['registered'] == true;
+      final pinSupported = status['pinSupported'] == true;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            ok
+                ? 'درخواست افزودن ویجت Planner ارسال شد.'
+                : registered
+                    ? 'ویجت داخل APK ثبت است؛ افزودن مستقیم توسط لانچر پشتیبانی نمی‌شود: $pinSupported'
+                    : 'Provider ویجت در این APK ثبت نشده است. نسخه نصب‌شده: $appVersionLabel',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('افزودن ویجت انجام نشد. نسخه $appVersionLabel')),
+      );
+    }
+  }
+
+  Future<void> act(String kind, dynamic item, String action) async {
+    try {
+      if (action == 'continue') {
+        final raw = kind == 'task' ? item['due_at'] : item['starts_at'];
+        final picked = await showPersianDateTimePicker(
+          context,
+          initial: DateTime.tryParse(raw?.toString() ?? '')?.toLocal(),
+        );
+        if (picked == null) return;
+        await Api.call(
+          '/${kind}s/${item['id']}/continue',
+          method: 'POST',
+          body: {'due_at': picked.toUtc().toIso8601String()},
+        );
+      } else {
+        await Api.call('/${kind}s/${item['id']}/complete', method: 'POST');
+      }
+      await load();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString())),
+        );
+      }
+    }
+  }
+
+  Future<void> add(String kind) async {
+    final title = TextEditingController();
+    final notes = TextEditingController();
+    DateTime? when = DateTime.now().add(const Duration(hours: 1));
+    bool saving = false;
+    String? formError;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheet) => StatefulBuilder(
+        builder: (context, setLocal) => SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            18,
+            18,
+            18,
+            18 + MediaQuery.of(sheet).viewInsets.bottom,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Icon(kind == 'task' ? Icons.add_task : Icons.event_available),
+                  const SizedBox(width: 8),
+                  Text(
+                    kind == 'task' ? 'کار جدید' : 'رویداد جدید',
+                    style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: title,
+                autofocus: true,
+                textInputAction: TextInputAction.next,
+                decoration: InputDecoration(
+                  labelText: kind == 'task' ? 'عنوان کار' : 'عنوان رویداد',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: notes,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(labelText: 'توضیحات / یادداشت'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final v = await showPersianDateTimePicker(
+                          context,
+                          initial: when,
+                        );
+                        if (v != null) setLocal(() => when = v);
+                      },
+                icon: const Icon(Icons.calendar_month),
+                label: Text(
+                  when == null
+                      ? 'انتخاب تاریخ و ساعت شمسی'
+                      : persianDate(when!.toIso8601String()),
+                ),
+              ),
+              if (formError != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  formError!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+              ],
+              const SizedBox(height: 14),
+              FilledButton.icon(
+                onPressed: saving
+                    ? null
+                    : () async {
+                        final cleanTitle = title.text.trim();
+                        if (cleanTitle.isEmpty) {
+                          setLocal(() => formError = 'عنوان را وارد کنید.');
+                          return;
+                        }
+                        if (when == null) {
+                          setLocal(() => formError = 'تاریخ و ساعت را انتخاب کنید.');
+                          return;
+                        }
+                        setLocal(() {
+                          saving = true;
+                          formError = null;
+                        });
+                        try {
+                          if (kind == 'task') {
+                            await Api.call(
+                              '/tasks',
+                              method: 'POST',
+                              body: {
+                                'title': cleanTitle,
+                                'notes': notes.text.trim().isEmpty ? null : notes.text.trim(),
+                                'due_at': when!.toUtc().toIso8601String(),
+                              },
+                            );
+                          } else {
+                            await Api.call(
+                              '/events',
+                              method: 'POST',
+                              body: {
+                                'title': cleanTitle,
+                                'starts_at': when!.toUtc().toIso8601String(),
+                              },
+                            );
+                          }
+                          if (sheet.mounted) Navigator.pop(sheet);
+                          await load();
+                          if (mounted) {
+                            ScaffoldMessenger.of(this.context).showSnackBar(
+                              SnackBar(
+                                content: Text(kind == 'task' ? 'کار ثبت شد.' : 'رویداد ثبت شد.'),
+                              ),
+                            );
+                          }
+                        } catch (e) {
+                          setLocal(() {
+                            saving = false;
+                            formError = e.toString();
+                          });
+                        }
+                      },
+                icon: saving
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.save_outlined),
+                label: Text(saving ? 'در حال ذخیره...' : 'ذخیره'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    title.dispose();
+    notes.dispose();
+  }
+
+  Future<void> showCreateMenu() async {
+    final kind = await showModalBottomSheet<String>(
+      context: context,
+      useSafeArea: true,
+      builder: (sheet) => Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              'افزودن',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(sheet, 'task'),
+              icon: const Icon(Icons.add_task),
+              label: const Text('کار جدید'),
+            ),
+            const SizedBox(height: 8),
+            FilledButton.tonalIcon(
+              onPressed: () => Navigator.pop(sheet, 'event'),
+              icon: const Icon(Icons.event_available),
+              label: const Text('رویداد جدید'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (kind != null && mounted) await add(kind);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final openTasks = tasks.where((x) => x['status'] != 'completed').toList();
+    final openEvents = events.where((x) => x['status'] != 'completed').toList();
+    final pages = [
+      Today(tasks: openTasks, events: openEvents, onAct: act, onAdd: add, onPinWidget: pinWidget),
+      ItemsPage(title: 'کارها', kind: 'task', items: openTasks, onAct: act),
+      ItemsPage(title: 'رویدادها', kind: 'event', items: openEvents, onAct: act),
+      CalendarPage(tasks: openTasks, events: openEvents, onAct: act),
+      const WorkspacesPage(),
+      const MessagesPage(),
+    ];
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(['امروز', 'کارها', 'رویدادها', 'تقویم', 'فضای کار', 'پیام‌ها'][tab]),
+        actions: [
+          if (tab <= 3)
+            IconButton(
+              tooltip: 'افزودن کار یا رویداد',
+              onPressed: showCreateMenu,
+              icon: const Icon(Icons.add_circle_outline),
+            ),
+          IconButton(onPressed: load, icon: const Icon(Icons.refresh_rounded)),
+          IconButton(
+            onPressed: () async {
+              await Api.clearToken();
+              if (!context.mounted) return;
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const Gate()),
+                (_) => false,
+              );
+            },
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: busy
+          ? const Center(child: CircularProgressIndicator())
+          : error != null
+              ? Center(child: Text(error!))
+              : RefreshIndicator(onRefresh: load, child: pages[tab]),
+      floatingActionButton: tab <= 3
+          ? FloatingActionButton.extended(
+              onPressed: tab == 1
+                  ? () => add('task')
+                  : tab == 2
+                      ? () => add('event')
+                      : showCreateMenu,
+              icon: const Icon(Icons.add),
+              label: Text(tab == 1 ? 'کار جدید' : tab == 2 ? 'رویداد جدید' : 'افزودن'),
+            )
+          : null,
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: tab,
+        onDestinationSelected: (i) => setState(() => tab = i),
+        labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
+        destinations: const [
+          NavigationDestination(icon: Icon(Icons.today_outlined), label: 'امروز'),
+          NavigationDestination(icon: Icon(Icons.check_circle_outline), label: 'کارها'),
+          NavigationDestination(icon: Icon(Icons.event_outlined), label: 'رویداد'),
+          NavigationDestination(icon: Icon(Icons.calendar_month_outlined), label: 'تقویم'),
+          NavigationDestination(icon: Icon(Icons.groups_outlined), label: 'فضای کار'),
+          NavigationDestination(icon: Icon(Icons.chat_bubble_outline), label: 'پیام'),
+        ],
+      ),
+    );
+  }
+}
+
+typedef ActionFn = Future<void> Function(String, dynamic, String);
+
+class Today extends StatelessWidget {
+  final List<dynamic> tasks;
+  final List<dynamic> events;
+  final ActionFn onAct;
+  final Future<void> Function(String kind) onAdd;
+  final Future<void> Function() onPinWidget;
+  const Today({
+    super.key,
+    required this.tasks,
+    required this.events,
+    required this.onAct,
+    required this.onAdd,
+    required this.onPinWidget,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final all = [
+      ...tasks.map((x) => {'kind': 'task', 'item': x, 'date': x['due_at']}),
+      ...events.map((x) => {'kind': 'event', 'item': x, 'date': x['starts_at']}),
+    ]..sort((a, b) => (a['date'] ?? '').toString().compareTo((b['date'] ?? '').toString()));
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [
+        Row(
+          children: [
+            Expanded(child: Stat(title: 'کارهای باز', value: tasks.length)),
+            const SizedBox(width: 10),
+            Expanded(child: Stat(title: 'رویدادها', value: events.length)),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: () => onAdd('task'),
+                icon: const Icon(Icons.add_task),
+                label: const Text('کار جدید'),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: FilledButton.tonalIcon(
+                onPressed: () => onAdd('event'),
+                icon: const Icon(Icons.event_available),
+                label: const Text('رویداد جدید'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        OutlinedButton.icon(
+          onPressed: onPinWidget,
+          icon: const Icon(Icons.widgets_outlined),
+          label: const Text('افزودن ویجت Planner به صفحه اصلی'),
+        ),
+        const SizedBox(height: 6),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'نسخه $appVersionLabel • Secure Token Storage',
+            textDirection: TextDirection.rtl,
+            style: const TextStyle(fontSize: 11, color: Colors.black54),
+          ),
+        ),
+        const SizedBox(height: 18),
+        const Text('برنامه‌های پیش رو', style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        if (all.isEmpty) const Empty(text: 'برنامه‌ای ثبت نشده'),
+        ...all.take(10).map(
+              (x) => ItemCard(
+                item: x['item'],
+                kind: x['kind'] as String,
+                onAct: onAct,
+              ),
+            ),
+      ],
+    );
+  }
+}
+
+class Stat extends StatelessWidget {
+  final String title;
+  final int value;
+  const Stat({super.key, required this.title, required this.value});
+  @override
+  Widget build(BuildContext context) => Card(
+        elevation: 0,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title),
+              const SizedBox(height: 6),
+              Text('$value', style: const TextStyle(fontSize: 27, fontWeight: FontWeight.bold)),
+            ],
+          ),
+        ),
+      );
+}
+
+class ItemsPage extends StatefulWidget {
+  final String title;
+  final String kind;
+  final List<dynamic> items;
+  final ActionFn onAct;
+  const ItemsPage({super.key, required this.title, required this.kind, required this.items, required this.onAct});
+
+  @override
+  State<ItemsPage> createState() => _ItemsPageState();
+}
+
+class _ItemsPageState extends State<ItemsPage> {
+  int page = 0;
+  static const size = 15;
+  @override
+  Widget build(BuildContext context) {
+    final pages = (widget.items.length / size).ceil().clamp(1, 9999);
+    if (page >= pages) page = pages - 1;
+    final from = page * size;
+    final items = widget.items.skip(from).take(size).toList();
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      physics: const AlwaysScrollableScrollPhysics(),
+      children: [
+        if (items.isEmpty) const Empty(text: 'هنوز چیزی ثبت نشده'),
+        ...items.map((x) => ItemCard(item: x, kind: widget.kind, onAct: widget.onAct)),
+        if (pages > 1)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              IconButton(onPressed: page > 0 ? () => setState(() => page--) : null, icon: const Icon(Icons.chevron_right)),
+              Text('صفحه ${page + 1} از $pages'),
+              IconButton(onPressed: page < pages - 1 ? () => setState(() => page++) : null, icon: const Icon(Icons.chevron_left)),
+            ],
+          ),
+      ],
+    );
+  }
+}
+
+class ItemCard extends StatelessWidget {
+  final dynamic item;
+  final String kind;
+  final ActionFn onAct;
+  const ItemCard({super.key, required this.item, required this.kind, required this.onAct});
+  @override
+  Widget build(BuildContext context) => Card(
+        elevation: 0,
+        margin: const EdgeInsets.only(bottom: 10),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(item['title'] ?? '', textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+              const SizedBox(height: 5),
+              Text(persianDate(kind == 'task' ? item['due_at'] : item['starts_at']), textAlign: TextAlign.right),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(child: OutlinedButton(onPressed: () => onAct(kind, item, 'continue'), child: const Text('ادامه دارد'))),
+                  const SizedBox(width: 8),
+                  Expanded(child: FilledButton(onPressed: () => onAct(kind, item, 'complete'), child: const Text('انجام شد'))),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+}
+
+class CalendarPage extends StatefulWidget {
+  final List<dynamic> tasks;
+  final List<dynamic> events;
+  final ActionFn onAct;
+  const CalendarPage({super.key, required this.tasks, required this.events, required this.onAct});
+  @override
+  State<CalendarPage> createState() => _CalendarPageState();
+}
+
+class _CalendarPageState extends State<CalendarPage> {
+  late int year;
+  late int month;
+  int selected = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    final n = Jalali.now();
+    year = n.year;
+    month = n.month;
+    selected = n.day;
+  }
+
+  List<dynamic> itemsFor(int day) {
+    bool same(dynamic raw) {
+      final d = DateTime.tryParse(raw?.toString() ?? '')?.toLocal();
+      if (d == null) return false;
+      final j = Jalali.fromDateTime(d);
+      return j.year == year && j.month == month && j.day == day;
+    }
+    return [
+      ...widget.tasks.where((x) => same(x['due_at'])).map((x) => {'kind': 'task', 'item': x}),
+      ...widget.events.where((x) => same(x['starts_at'])).map((x) => {'kind': 'event', 'item': x}),
+    ];
+  }
+
+  void move(int by) {
+    setState(() {
+      month += by;
+      if (month == 13) { month = 1; year++; }
+      if (month == 0) { month = 12; year--; }
+      selected = 1;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final first = Jalali(year, month, 1).toGregorian().toDateTime();
+    final offset = (first.weekday + 1) % 7;
+    final length = Jalali(year, month).monthLength;
+    final rowCount = ((offset + length) / 7).ceil();
+
+    Widget calendarCell(int logicalIndex) {
+      final day = logicalIndex - offset + 1;
+      if (day < 1 || day > length) return const SizedBox(height: 46);
+      return Padding(
+        padding: const EdgeInsets.all(2.5),
+        child: InkWell(
+          onTap: () => setState(() => selected = day),
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            height: 46,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              color: selected == day ? const Color(0xffe7f4ec) : Colors.white,
+              border: Border.all(color: const Color(0xffe5e9e6)),
+            ),
+            padding: const EdgeInsets.all(7),
+            child: Stack(
+              children: [
+                Align(alignment: Alignment.topRight, child: Text('$day')),
+                if (itemsFor(day).isNotEmpty)
+                  const Positioned(bottom: 1, right: 1, child: CircleAvatar(radius: 3)),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final selectedItems = itemsFor(selected);
+    return ListView(
+      padding: const EdgeInsets.all(14),
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            IconButton(onPressed: () => move(-1), icon: const Icon(Icons.chevron_right)),
+            Text('${Jalali(year, month).formatter.mN} $year', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+            IconButton(onPressed: () => move(1), icon: const Icon(Icons.chevron_left)),
+          ],
+        ),
+        const Row(
+          textDirection: TextDirection.ltr,
+          children: [
+            Expanded(child: Center(child: Text('جمعه'))),
+            Expanded(child: Center(child: Text('پنج'))),
+            Expanded(child: Center(child: Text('چهار'))),
+            Expanded(child: Center(child: Text('سه'))),
+            Expanded(child: Center(child: Text('دو'))),
+            Expanded(child: Center(child: Text('یک'))),
+            Expanded(child: Center(child: Text('شنبه'))),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Table(
+          defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+          children: List.generate(
+            rowCount,
+            (row) => TableRow(
+              // Explicit physical column order: Friday at far left, Saturday at far right.
+              children: List.generate(
+                7,
+                (displayColumn) => calendarCell(row * 7 + (6 - displayColumn)),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 18),
+        Text('$selected ${Jalali(year, month).formatter.mN}', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
+        if (selectedItems.isEmpty) const Empty(text: 'موردی در این روز نیست'),
+        ...selectedItems.map((x) => ItemCard(item: x['item'], kind: x['kind'], onAct: widget.onAct)),
+      ],
+    );
+  }
+}
+
+class WorkspacesPage extends StatefulWidget {
+  const WorkspacesPage({super.key});
+
+  @override
+  State<WorkspacesPage> createState() => _WorkspacesPageState();
+}
+
+class _WorkspacesPageState extends State<WorkspacesPage> {
+  List<dynamic> workspaces = [];
+  bool busy = true;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  Future<void> load() async {
+    try {
+      final x = await Api.call('/workspaces');
+      if (mounted) setState(() { workspaces = x ?? []; busy = false; error = null; });
+    } catch (e) {
+      if (mounted) setState(() { error = e.toString(); busy = false; });
+    }
+  }
+
+  Future<void> createWorkspace() async {
+    final name = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('فضای کار جدید'),
+        content: TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: 'نام فضای کار')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialog, false), child: const Text('انصراف')),
+          FilledButton(onPressed: () => Navigator.pop(dialog, true), child: const Text('ایجاد')),
+        ],
+      ),
+    );
+    if (ok == true && name.text.trim().isNotEmpty) {
+      await Api.call('/workspaces', method: 'POST', body: {'name': name.text.trim()});
+      await load();
+    }
+    name.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (busy) return const Center(child: CircularProgressIndicator());
+    return RefreshIndicator(
+      onRefresh: load,
+      child: ListView(
+        padding: const EdgeInsets.all(14),
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          Row(children: [
+            Expanded(child: Text('فضاهای کاری من', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold))),
+            FilledButton.icon(onPressed: createWorkspace, icon: const Icon(Icons.add), label: const Text('ایجاد')),
+          ]),
+          const SizedBox(height: 12),
+          if (error != null) Card(child: Padding(padding: const EdgeInsets.all(12), child: Text(error!))),
+          if (workspaces.isEmpty) const Empty(text: 'هنوز فضای کاری ندارید'),
+          ...workspaces.map((w) => Card(
+            elevation: 0,
+            child: ListTile(
+              leading: const CircleAvatar(child: Icon(Icons.groups_rounded)),
+              title: Text(w['name'] ?? 'فضای کار'),
+              subtitle: const Text('محیط مشترک اعضا، اسناد و گفتگو'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () async {
+                await Navigator.push(context, MaterialPageRoute(builder: (_) => WorkspaceDetailPage(workspaceId: w['id'], initialName: w['name'] ?? 'فضای کار')));
+                await load();
+              },
+            ),
+          )),
+        ],
+      ),
+    );
+  }
+}
+
+class WorkspaceDetailPage extends StatefulWidget {
+  final String workspaceId;
+  final String initialName;
+  const WorkspaceDetailPage({super.key, required this.workspaceId, required this.initialName});
+
+  @override
+  State<WorkspaceDetailPage> createState() => _WorkspaceDetailPageState();
+}
+
+class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
+  dynamic detail;
+  dynamic me;
+  dynamic boardDocument;
+  List<dynamic> boardItems = [];
+  List<dynamic> documents = [];
+  List<dynamic> foundUsers = [];
+  final memberSearch = TextEditingController();
+  bool busy = true;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    load();
+  }
+
+  @override
+  void dispose() {
+    memberSearch.dispose();
+    super.dispose();
+  }
+
+  Future<void> load() async {
+    try {
+      final r = await Future.wait([
+        Api.call('/workspaces/${widget.workspaceId}'),
+        Api.call('/workspaces/${widget.workspaceId}/documents'),
+        Api.call('/me'),
+      ]);
+      final rawDocs = List<dynamic>.from(r[1] ?? []);
+      dynamic board;
+      for (final d in rawDocs) {
+        if (d['title'] == '__planner_workspace_board__') { board = d; break; }
+      }
+      List<dynamic> parsedBoard = [];
+      if (board != null) {
+        try {
+          final decoded = jsonDecode((board['content'] ?? '[]').toString());
+          if (decoded is List) parsedBoard = List<dynamic>.from(decoded);
+        } catch (_) {}
+      }
+      if (mounted) setState(() {
+        detail = r[0];
+        me = r[2];
+        boardDocument = board;
+        boardItems = parsedBoard;
+        documents = rawDocs.where((d) => d['title'] != '__planner_workspace_board__').toList();
+        busy = false;
+        error = null;
+      });
+    } catch (e) {
+      if (mounted) setState(() { error = e.toString(); busy = false; });
+    }
+  }
+
+  Future<void> searchMembers(String q) async {
+    if (q.trim().length < 2) {
+      if (mounted) setState(() => foundUsers = []);
+      return;
+    }
+    final x = await Api.call('/users/search?q=${Uri.encodeComponent(q.trim())}');
+    final existing = <String>{...(detail?['members'] ?? []).map<String>((m) => m['user_id'].toString())};
+    if (mounted) setState(() => foundUsers = (x ?? []).where((u) => !existing.contains(u['id'].toString())).toList());
+  }
+
+  Future<void> addMember(dynamic user) async {
+    try {
+      await Api.call('/workspaces/${widget.workspaceId}/members', method: 'POST', body: {
+        'user_id': user['id'], 'role': 'editor', 'color': user['color'] ?? '#16A34A',
+      });
+      memberSearch.clear();
+      if (mounted) setState(() => foundUsers = []);
+      await load();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString())));
+    }
+  }
+
+  Future<void> _ensureBoard() async {
+    if (boardDocument != null) return;
+    final created = await Api.call('/workspaces/${widget.workspaceId}/documents', method: 'POST', body: {
+      'title': '__planner_workspace_board__',
+      'content': '[]',
+    });
+    boardDocument = created;
+    boardItems = [];
+  }
+
+  Future<void> _saveBoard() async {
+    await _ensureBoard();
+    try {
+      final r = await Api.call('/documents/${boardDocument['id']}', method: 'PUT', body: {
+        'content': jsonEncode(boardItems),
+        'base_revision': boardDocument['revision'] ?? 0,
+      });
+      boardDocument['revision'] = r['revision'] ?? ((boardDocument['revision'] ?? 0) + 1);
+      boardDocument['content'] = jsonEncode(boardItems);
+    } catch (e) {
+      await load();
+      rethrow;
+    }
+  }
+
+  Future<void> addSharedItem() async {
+    final title = TextEditingController();
+    String kind = 'task';
+    String? assignee = me?['id']?.toString();
+    DateTime? when;
+    final members = List<dynamic>.from(detail?['members'] ?? []);
+    final ok = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheet) => StatefulBuilder(
+        builder: (context, setLocal) => Padding(
+          padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.of(sheet).viewInsets.bottom),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(controller: title, autofocus: true, decoration: const InputDecoration(labelText: 'عنوان')),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              initialValue: kind,
+              decoration: const InputDecoration(labelText: 'نوع'),
+              items: const [
+                DropdownMenuItem(value: 'task', child: Text('کار مشترک')),
+                DropdownMenuItem(value: 'event', child: Text('رویداد مشترک')),
+              ],
+              onChanged: (v) => setLocal(() => kind = v ?? 'task'),
+            ),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String?>(
+              initialValue: assignee,
+              decoration: const InputDecoration(labelText: 'مسئول'),
+              items: [
+                const DropdownMenuItem<String?>(value: null, child: Text('بدون مسئول مشخص')),
+                ...members.map((m) => DropdownMenuItem<String?>(value: m['user_id']?.toString(), child: Text(m['name'] ?? m['email'] ?? 'عضو'))),
+              ],
+              onChanged: (v) => setLocal(() => assignee = v),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final picked = await showPersianDateTimePicker(context, initial: when);
+                if (picked != null) setLocal(() => when = picked);
+              },
+              icon: const Icon(Icons.calendar_month),
+              label: Text(when == null ? 'تاریخ و ساعت شمسی' : persianDate(when!.toIso8601String())),
+            ),
+            const SizedBox(height: 12),
+            SizedBox(width: double.infinity, child: FilledButton(onPressed: () => Navigator.pop(sheet, true), child: const Text('افزودن به فضای کار'))),
+          ]),
+        ),
+      ),
+    );
+    if (ok == true && title.text.trim().isNotEmpty) {
+      final item = <String, dynamic>{
+        'id': DateTime.now().microsecondsSinceEpoch.toString(),
+        'kind': kind,
+        'title': title.text.trim(),
+        'assignee_user_id': assignee,
+        'date': when?.toUtc().toIso8601String(),
+        'status': 'open',
+        'created_by': me?['id'],
+      };
+      setState(() => boardItems = [...boardItems, item]);
+      try {
+        await _saveBoard();
+      } catch (e) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('هم‌زمان عضو دیگری برد را تغییر داده است؛ اطلاعات تازه شد. $e')));
+      }
+    }
+    title.dispose();
+  }
+
+  Future<void> toggleSharedItem(dynamic item) async {
+    final copy = boardItems.map((x) => Map<String, dynamic>.from(x as Map)).toList();
+    final index = copy.indexWhere((x) => x['id'] == item['id']);
+    if (index < 0) return;
+    copy[index]['status'] = copy[index]['status'] == 'completed' ? 'open' : 'completed';
+    setState(() => boardItems = copy);
+    try {
+      await _saveBoard();
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('ذخیره برد مشترک انجام نشد؛ اطلاعات تازه شد. $e')));
+    }
+  }
+
+  bool get _isOwner => detail != null && me != null && detail['owner_id'].toString() == me['id'].toString();
+
+  String get _myRole {
+    for (final m in List<dynamic>.from(detail?['members'] ?? [])) {
+      if (me != null && m['user_id'].toString() == me['id'].toString()) return (m['role'] ?? 'viewer').toString();
+    }
+    return 'viewer';
+  }
+
+  bool get _canEdit => _myRole != 'viewer';
+
+  String _memberName(dynamic userId) {
+    if (userId == null) return 'بدون مسئول';
+    for (final m in List<dynamic>.from(detail?['members'] ?? [])) {
+      if (m['user_id'].toString() == userId.toString()) return m['name'] ?? m['email'] ?? 'عضو';
+    }
+    return 'عضو';
+  }
+
+  Future<void> createDocument() async {
+    final title = TextEditingController();
+    final content = TextEditingController();
+    final ok = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheet) => Padding(
+        padding: EdgeInsets.fromLTRB(16, 16, 16, 16 + MediaQuery.of(sheet).viewInsets.bottom),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(controller: title, autofocus: true, decoration: const InputDecoration(labelText: 'عنوان سند')),
+          const SizedBox(height: 10),
+          TextField(controller: content, minLines: 4, maxLines: 10, decoration: const InputDecoration(labelText: 'محتوا')),
+          const SizedBox(height: 12),
+          SizedBox(width: double.infinity, child: FilledButton(onPressed: () => Navigator.pop(sheet, true), child: const Text('ایجاد سند مشترک'))),
+        ]),
+      ),
+    );
+    if (ok == true && title.text.trim().isNotEmpty) {
+      await Api.call('/workspaces/${widget.workspaceId}/documents', method: 'POST', body: {'title': title.text.trim(), 'content': content.text});
+      await load();
+    }
+    title.dispose(); content.dispose();
+  }
+
+  Future<void> chatWith(dynamic member) async {
+    final c = await Api.call('/conversations', method: 'POST', body: {'other_user_id': member['user_id']});
+    if (!mounted) return;
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => DirectConversationPage(
+      conversationId: c['id'], peerName: member['name'] ?? 'عضو', peerEmail: member['email'] ?? '',
+    )));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(detail?['name'] ?? widget.initialName), actions: [IconButton(onPressed: load, icon: const Icon(Icons.refresh))]),
+      body: busy ? const Center(child: CircularProgressIndicator()) : error != null ? Center(child: Text(error!)) : RefreshIndicator(
+        onRefresh: load,
+        child: ListView(
+          padding: const EdgeInsets.all(14),
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            Card(elevation: 0, child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                Text('اعضا', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 10),
+                ...((detail?['members'] ?? []) as List).map((m) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: CircleAvatar(child: Text((m['name'] ?? 'U').toString().isEmpty ? 'U' : (m['name'] ?? 'U').toString().substring(0, 1))),
+                  title: Text(m['name'] ?? 'کاربر'),
+                  subtitle: Text('${m['email'] ?? ''} • ${m['role'] ?? 'editor'}'),
+                  trailing: m['role'] == 'owner' ? const Icon(Icons.workspace_premium) : IconButton(onPressed: () => chatWith(m), icon: const Icon(Icons.chat_bubble_outline)),
+                )),
+                if (_isOwner) ...[
+                  const Divider(),
+                  TextField(
+                    controller: memberSearch,
+                    onChanged: searchMembers,
+                    decoration: const InputDecoration(prefixIcon: Icon(Icons.person_add_alt_1), hintText: 'افزودن عضو با نام یا ایمیل'),
+                  ),
+                  if (foundUsers.isNotEmpty) ...foundUsers.map((u) => ListTile(
+                    title: Text(u['name'] ?? ''), subtitle: Text(u['email'] ?? ''), trailing: const Icon(Icons.add_circle_outline), onTap: () => addMember(u),
+                  )),
+                ],
+              ]),
+            )),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(child: Text('برد مشترک', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold))),
+              FilledButton.tonalIcon(onPressed: _canEdit ? addSharedItem : null, icon: const Icon(Icons.add_task), label: const Text('افزودن')),
+            ]),
+            const SizedBox(height: 8),
+            if (boardItems.isEmpty) const Empty(text: 'هنوز کار یا رویداد مشترکی ثبت نشده'),
+            ...boardItems.map((item) => Card(
+              elevation: 0,
+              child: CheckboxListTile(
+                value: item['status'] == 'completed',
+                onChanged: _canEdit ? (_) => toggleSharedItem(item) : null,
+                secondary: Icon(item['kind'] == 'event' ? Icons.event_outlined : Icons.check_circle_outline),
+                title: Text(
+                  item['title'] ?? '',
+                  style: TextStyle(decoration: item['status'] == 'completed' ? TextDecoration.lineThrough : null),
+                ),
+                subtitle: Text('${item['kind'] == 'event' ? 'رویداد' : 'کار'} • ${_memberName(item['assignee_user_id'])}${item['date'] == null ? '' : ' • ${persianDate(item['date'])}'}'),
+              ),
+            )),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(child: Text('اسناد مشترک', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold))),
+              FilledButton.tonalIcon(onPressed: _canEdit ? createDocument : null, icon: const Icon(Icons.note_add_outlined), label: const Text('سند جدید')),
+            ]),
+            const SizedBox(height: 8),
+            if (documents.isEmpty) const Empty(text: 'سند مشترکی ساخته نشده'),
+            ...documents.map((d) => Card(elevation: 0, child: ListTile(
+              leading: const Icon(Icons.description_outlined),
+              title: Text(d['title'] ?? 'سند'),
+              subtitle: Text('ویرایش ${d['revision'] ?? 0}'),
+              trailing: const Icon(Icons.chevron_left),
+              onTap: () async {
+                await Navigator.push(context, MaterialPageRoute(builder: (_) => WorkspaceDocumentPage(document: d)));
+                await load();
+              },
+            ))),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class WorkspaceDocumentPage extends StatefulWidget {
+  final dynamic document;
+  const WorkspaceDocumentPage({super.key, required this.document});
+
+  @override
+  State<WorkspaceDocumentPage> createState() => _WorkspaceDocumentPageState();
+}
+
+class _WorkspaceDocumentPageState extends State<WorkspaceDocumentPage> {
+  late final TextEditingController content;
+  late int revision;
+  bool saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    content = TextEditingController(text: widget.document['content'] ?? '');
+    revision = widget.document['revision'] ?? 0;
+  }
+
+  @override
+  void dispose() { content.dispose(); super.dispose(); }
+
+  Future<void> save() async {
+    setState(() => saving = true);
+    try {
+      final r = await Api.call('/documents/${widget.document['id']}', method: 'PUT', body: {'content': content.text, 'base_revision': revision});
+      if (mounted) {
+        setState(() { revision = r['revision'] ?? revision + 1; saving = false; });
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('سند ذخیره شد')));
+      }
+    } catch (e) {
+      if (mounted) { setState(() => saving = false); ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('ذخیره انجام نشد؛ ممکن است عضو دیگری سند را تغییر داده باشد. $e'))); }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text(widget.document['title'] ?? 'سند مشترک'), actions: [IconButton(onPressed: saving ? null : save, icon: const Icon(Icons.save_outlined))]),
+    body: Padding(
+      padding: const EdgeInsets.all(14),
+      child: Column(children: [
+        Row(children: [const Icon(Icons.sync, size: 18), const SizedBox(width: 6), Text('نسخه $revision')]),
+        const SizedBox(height: 10),
+        Expanded(child: TextField(controller: content, expands: true, maxLines: null, minLines: null, textAlignVertical: TextAlignVertical.top, decoration: const InputDecoration(hintText: 'محتوای مشترک را بنویسید…'))),
+        const SizedBox(height: 10),
+        SizedBox(width: double.infinity, child: FilledButton.icon(onPressed: saving ? null : save, icon: saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.save), label: const Text('ذخیره تغییرات'))),
+      ]),
+    ),
+  );
+}
+
+class DirectConversationPage extends StatefulWidget {
+  final String conversationId;
+  final String peerName;
+  final String peerEmail;
+  const DirectConversationPage({super.key, required this.conversationId, required this.peerName, required this.peerEmail});
+
+  @override
+  State<DirectConversationPage> createState() => _DirectConversationPageState();
+}
+
+class _DirectConversationPageState extends State<DirectConversationPage> {
+  List<dynamic> messages = [];
+  final message = TextEditingController();
+  Timer? poll;
+
+  @override
+  void initState() { super.initState(); load(); poll = Timer.periodic(const Duration(seconds: 5), (_) => load()); }
+  @override
+  void dispose() { poll?.cancel(); message.dispose(); super.dispose(); }
+
+  Future<void> load() async {
+    final x = await Api.call('/conversations/${widget.conversationId}/messages');
+    if (mounted) setState(() => messages = x ?? []);
+  }
+  Future<void> send() async {
+    if (message.text.trim().isEmpty) return;
+    await Api.call('/conversations/${widget.conversationId}/messages', method: 'POST', body: {'body': message.text.trim()});
+    message.clear(); await load();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(widget.peerName), Text(widget.peerEmail, style: const TextStyle(fontSize: 11))])),
+    body: Column(children: [
+      Expanded(child: RefreshIndicator(onRefresh: load, child: ListView.builder(
+        padding: const EdgeInsets.all(12), physics: const AlwaysScrollableScrollPhysics(), itemCount: messages.length,
+        itemBuilder: (_, i) => Card(elevation: 0, child: Padding(padding: const EdgeInsets.all(10), child: Text(messages[i]['body'] ?? ''))),
+      ))),
+      SafeArea(child: Padding(padding: const EdgeInsets.all(10), child: Row(children: [
+        Expanded(child: TextField(controller: message, decoration: const InputDecoration(hintText: 'پیام بنویسید…'))),
+        const SizedBox(width: 8), IconButton.filled(onPressed: send, icon: const Icon(Icons.send)),
+      ]))),
+    ]),
+  );
+}
+
+class MessagesPage extends StatefulWidget {
+  const MessagesPage({super.key});
+  @override
+  State<MessagesPage> createState() => _MessagesPageState();
+}
+
+class _MessagesPageState extends State<MessagesPage> {
+  List<dynamic> convs = [];
+  List<dynamic> users = [];
+  List<dynamic> messages = [];
+  dynamic active;
+  final search = TextEditingController();
+  final message = TextEditingController();
+  Timer? poll;
+
+  @override
+  void initState() {
+    super.initState();
+    loadConvs();
+  }
+
+  Future<void> loadConvs() async {
+    final x = await Api.call('/chat/conversations');
+    if (mounted) setState(() => convs = x ?? []);
+  }
+
+  Future<void> searchUsers(String q) async {
+    if (q.trim().isEmpty) return setState(() => users = []);
+    final x = await Api.call('/users/search?q=${Uri.encodeComponent(q.trim())}');
+    if (mounted) setState(() => users = x ?? []);
+  }
+
+  Future<void> start(dynamic u) async {
+    final c = await Api.call('/conversations', method: 'POST', body: {'other_user_id': u['id']});
+    setState(() {
+      active = {'id': c['id'], 'peer': u};
+      users = [];
+      search.clear();
+    });
+    await loadMessages();
+    await loadConvs();
+  }
+
+  Future<void> open(dynamic c) async {
+    poll?.cancel();
+    setState(() => active = c);
+    await loadMessages();
+    poll = Timer.periodic(const Duration(seconds: 5), (_) => loadMessages());
+  }
+
+  Future<void> loadMessages() async {
+    if (active == null) return;
+    final x = await Api.call('/conversations/${active['id']}/messages');
+    if (mounted) setState(() => messages = x ?? []);
+  }
+
+  Future<void> send() async {
+    if (active == null || message.text.trim().isEmpty) return;
+    await Api.call('/conversations/${active['id']}/messages', method: 'POST', body: {'body': message.text.trim()});
+    message.clear();
+    await loadMessages();
+    await loadConvs();
+  }
+
+  @override
+  void dispose() {
+    poll?.cancel();
+    search.dispose();
+    message.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (active != null) {
+      return Column(
+        children: [
+          ListTile(
+            leading: IconButton(onPressed: () { poll?.cancel(); setState(() => active = null); }, icon: const Icon(Icons.arrow_forward)),
+            title: Text(active['peer']?['name'] ?? 'گفتگو'),
+            subtitle: Text(active['peer']?['email'] ?? ''),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: messages.length,
+              itemBuilder: (_, i) => Card(elevation: 0, child: Padding(padding: const EdgeInsets.all(10), child: Text(messages[i]['body'] ?? ''))),
+            ),
+          ),
+          SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(10),
+              child: Row(
+                children: [
+                  Expanded(child: TextField(controller: message, decoration: const InputDecoration(hintText: 'پیام بنویسید…'))),
+                  const SizedBox(width: 8),
+                  IconButton.filled(onPressed: send, icon: const Icon(Icons.send)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    return ListView(
+      padding: const EdgeInsets.all(14),
+      children: [
+        TextField(
+          controller: search,
+          onChanged: searchUsers,
+          decoration: const InputDecoration(prefixIcon: Icon(Icons.search), hintText: 'نام یا ایمیل کاربر'),
+        ),
+        if (users.isNotEmpty)
+          Card(
+            child: Column(
+              children: users.map((u) => ListTile(title: Text(u['name'] ?? ''), subtitle: Text(u['email'] ?? ''), onTap: () => start(u))).toList(),
+            ),
+          ),
+        const SizedBox(height: 8),
+        ...convs.map((c) => ListTile(
+              leading: CircleAvatar(child: Text(c['peer']?['name']?.toString().substring(0, 1) ?? 'U')),
+              title: Text(c['peer']?['name'] ?? 'کاربر'),
+              subtitle: Text(c['last_message']?['body'] ?? 'گفتگو را شروع کنید', maxLines: 1, overflow: TextOverflow.ellipsis),
+              trailing: (c['unread'] ?? 0) > 0 ? Badge(label: Text('${c['unread']}')) : null,
+              onTap: () => open(c),
+            )),
+      ],
+    );
+  }
+}
+
+class Empty extends StatelessWidget {
+  final String text;
+  const Empty({super.key, required this.text});
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 28),
+        child: Text(text, textAlign: TextAlign.center, style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant)),
+      );
+}

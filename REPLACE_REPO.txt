@@ -1,0 +1,19 @@
+CLEAN REPLACEMENT REQUIRED
+
+Previous GitHub runs repeatedly built stale files. Do not overlay selected files.
+
+Recommended local Git replacement:
+1. Extract this ZIP to a temporary folder.
+2. In your local Android repository, keep only the .git folder.
+3. Copy ALL extracted files/folders into the repository root, including .github.
+4. Run:
+   git add -A
+   git commit -m "Planner Android 1.2.3 secure full replacement"
+   git push
+5. In GitHub Actions run only:
+   Planner Android Build 1.2.3 Secure
+6. Download APK only from artifact:
+   Planner-Android-APK-1.2.3-Secure
+7. Check artifact Planner-Build-Proof-1.2.3 before installation.
+8. Uninstall the old Planner app from the phone, then install the new APK.
+9. Confirm Today page displays version 1.2.3+14.
