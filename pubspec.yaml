@@ -1,5 +1,5 @@
 name: planner_suite
-version: 1.4.0+16
+version: 1.5.0+17
 publish_to: none
 environment:
   sdk: '>=3.12.0 <4.0.0'

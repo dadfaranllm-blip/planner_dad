@@ -14,8 +14,9 @@ const apiBase = String.fromEnvironment(
 );
 const widgetChannel = MethodChannel('planner/widget');
 const securityChannel = MethodChannel('planner/security');
-const appVersion = '1.4.0';
-const appBuild = '16';
+const notificationChannel = MethodChannel('planner/notifications');
+const appVersion = '1.5.0';
+const appBuild = '17';
 
 class SessionExpiredException implements Exception {
   const SessionExpiredException();
@@ -598,6 +599,7 @@ class _HomeState extends State<Home> {
         error = null;
       });
       await _updateWidget();
+      await _syncReminderNotifications();
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -629,6 +631,42 @@ class _HomeState extends State<Home> {
           'date': persianDate(x['starts_at']),
         }).toList()),
       });
+    } catch (_) {}
+  }
+
+  Future<void> _syncReminderNotifications() async {
+    DateTime? reminderAt(dynamic raw) {
+      final target = DateTime.tryParse(raw?.toString() ?? '')?.toLocal();
+      if (target == null) return null;
+      final previous = target.subtract(const Duration(days: 1));
+      return DateTime(previous.year, previous.month, previous.day, 17, 0);
+    }
+
+    final items = <Map<String, dynamic>>[];
+    for (final x in tasks.where((x) => x['status'] != 'completed')) {
+      final at = reminderAt(x['due_at']);
+      if (at != null && at.isAfter(DateTime.now())) {
+        items.add({
+          'id': 'task:${x['id']}',
+          'title': 'یادآوری کار',
+          'body': 'فردا موعد کار «${x['title'] ?? 'کار'}» است.',
+          'triggerAt': at.millisecondsSinceEpoch,
+        });
+      }
+    }
+    for (final x in events.where((x) => x['status'] != 'completed')) {
+      final at = reminderAt(x['starts_at']);
+      if (at != null && at.isAfter(DateTime.now())) {
+        items.add({
+          'id': 'event:${x['id']}',
+          'title': 'یادآوری رویداد',
+          'body': 'فردا رویداد «${x['title'] ?? 'رویداد'}» است.',
+          'triggerAt': at.millisecondsSinceEpoch,
+        });
+      }
+    }
+    try {
+      await notificationChannel.invokeMethod('syncReminders', {'items': items});
     } catch (_) {}
   }
 
@@ -1173,6 +1211,67 @@ class _CalendarPageState extends State<CalendarPage> {
     _loadOfficial();
   }
 
+  void moveYear(int by) {
+    setState(() {
+      year += by;
+      selected = selected.clamp(1, Jalali(year, month).monthLength).toInt();
+    });
+    _loadOfficial();
+  }
+
+  void goToday() {
+    final n = Jalali.now();
+    setState(() {
+      year = n.year;
+      month = n.month;
+      selected = n.day;
+    });
+    _loadOfficial();
+  }
+
+  Future<void> chooseMonthYear() async {
+    var yy = year;
+    var mm = month;
+    final result = await showDialog<List<int>>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setLocal) => AlertDialog(
+          title: const Text('انتخاب ماه و سال'),
+          content: Row(children: [
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                initialValue: mm,
+                decoration: const InputDecoration(labelText: 'ماه'),
+                items: List.generate(12, (i) => DropdownMenuItem(value: i + 1, child: Text(Jalali(1405, i + 1).formatter.mN))),
+                onChanged: (v) => setLocal(() => mm = v ?? mm),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: DropdownButtonFormField<int>(
+                initialValue: yy,
+                decoration: const InputDecoration(labelText: 'سال'),
+                items: List.generate(31, (i) { final y = Jalali.now().year - 15 + i; return DropdownMenuItem(value: y, child: Text('$y')); }),
+                onChanged: (v) => setLocal(() => yy = v ?? yy),
+              ),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('انصراف')),
+            FilledButton(onPressed: () => Navigator.pop(context, [yy, mm]), child: const Text('انتخاب')),
+          ],
+        ),
+      ),
+    );
+    if (result == null || !mounted) return;
+    setState(() {
+      year = result[0];
+      month = result[1];
+      selected = 1;
+    });
+    _loadOfficial();
+  }
+
   @override
   Widget build(BuildContext context) {
     final first = Jalali(year, month, 1).toGregorian().toDateTime();
@@ -1239,9 +1338,18 @@ class _CalendarPageState extends State<CalendarPage> {
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
         Row(children: [
-          IconButton(onPressed: () => move(-1), icon: const Icon(Icons.chevron_right)),
-          Expanded(child: Text('${Jalali(year, month).formatter.mN} $year', textAlign: TextAlign.center, style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900))),
-          IconButton(onPressed: () => move(1), icon: const Icon(Icons.chevron_left)),
+          FilledButton.tonal(onPressed: goToday, child: const Text('امروز')),
+          const SizedBox(width: 6),
+          IconButton(onPressed: () => moveYear(-1), tooltip: 'سال قبل', icon: const Icon(Icons.keyboard_double_arrow_right)),
+          IconButton(onPressed: () => move(-1), tooltip: 'ماه قبل', icon: const Icon(Icons.chevron_right)),
+          Expanded(
+            child: OutlinedButton(
+              onPressed: chooseMonthYear,
+              child: Text('${Jalali(year, month).formatter.mN} $year', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
+            ),
+          ),
+          IconButton(onPressed: () => move(1), tooltip: 'ماه بعد', icon: const Icon(Icons.chevron_left)),
+          IconButton(onPressed: () => moveYear(1), tooltip: 'سال بعد', icon: const Icon(Icons.keyboard_double_arrow_left)),
         ]),
         if (officialLoading) const LinearProgressIndicator(minHeight: 2),
         if (year != 1405)
@@ -2146,6 +2254,7 @@ class SettingsPage extends StatelessWidget {
   }
 
   Future<void> _logout(BuildContext context) async {
+    try { await notificationChannel.invokeMethod('clearReminders'); } catch (_) {}
     await SecureSession.clear();
     if (context.mounted) Navigator.pop(context, true);
   }
@@ -2216,6 +2325,17 @@ class SettingsPage extends StatelessWidget {
             subtitle: 'رویدادهای پیش‌رو و دسترسی سریع به رویداد جدید',
             preview: const _AgendaWidgetPreview(),
             onAdd: () => _pin(context, 'agenda'),
+          ),
+          const SizedBox(height: 24),
+          const _SettingsTitle(icon: Icons.notifications_active_outlined, title: 'یادآوری', subtitle: 'اعلان محلی حتی در زمان بسته بودن برنامه'),
+          const SizedBox(height: 10),
+          const Card(
+            child: ListTile(
+              leading: Icon(Icons.alarm_rounded),
+              title: Text('یک روز قبل، ساعت ۱۷:۰۰'),
+              subtitle: Text('برای کارها و رویدادهای تاریخ‌دار به‌صورت خودکار زمان‌بندی می‌شود.'),
+              trailing: Icon(Icons.verified_rounded),
+            ),
           ),
           const SizedBox(height: 24),
           const _SettingsTitle(icon: Icons.shield_outlined, title: 'امنیت', subtitle: 'وضعیت حفاظت حساب و ارتباط شبکه'),

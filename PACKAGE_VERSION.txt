@@ -1,7 +1,5 @@
-Planner Android complete 1.4.0+16
-- Official 1405 calendar occasions and holidays in Android calendar
-- Only one add action in the top app bar; duplicate home/FAB actions removed
-- Bottom navigation wrapped in SafeArea for system navigation bars
-- Access + refresh session flow with Keystore storage and automatic refresh
-- Four RTL widgets; task widget has larger clock/date and separated readable rows
-- Workspace collaboration retained
+Planner Android 1.5.0+17
+- Calendar: Today button, direct month/year selection, year/month navigation
+- Notifications: native Android reminder one day before due date at 17:00 local time
+- Reminders restored after reboot/app update
+- Existing RTL official 1405 calendar, widgets, workspace, token refresh and security retained

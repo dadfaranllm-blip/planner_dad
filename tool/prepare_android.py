@@ -91,15 +91,25 @@ object SecureTokenStore {{
 
 main.write_text(f'''package {pkg}
 
+import android.Manifest
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {{
+    override fun onCreate(savedInstanceState: Bundle?) {{
+        super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {{
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 417)
+        }}
+    }}
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {{
         super.configureFlutterEngine(flutterEngine)
 
@@ -119,6 +129,21 @@ class MainActivity : FlutterActivity() {{
                 "getToken" -> result.success(SecureTokenStore.read(this))
                 "getRefreshToken" -> result.success(SecureTokenStore.readRefresh(this))
                 "clearToken" -> {{ SecureTokenStore.clear(this); result.success(true) }}
+                else -> result.notImplemented()
+            }}
+        }}
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "planner/notifications").setMethodCallHandler {{ call, result ->
+            when (call.method) {{
+                "syncReminders" -> {{
+                    val items = call.argument<List<Map<String, Any?>>>("items") ?: emptyList()
+                    PlannerReminderScheduler.sync(this, items)
+                    result.success(true)
+                }}
+                "clearReminders" -> {{
+                    PlannerReminderScheduler.clear(this)
+                    result.success(true)
+                }}
                 else -> result.notImplemented()
             }}
         }}
@@ -151,6 +176,123 @@ class MainActivity : FlutterActivity() {{
                 }}
                 else -> result.notImplemented()
             }}
+        }}
+    }}
+}}
+''', encoding='utf-8')
+
+(kotlin_dir / 'PlannerReminderReceiver.kt').write_text(f'''package {pkg}
+
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.appwidget.AppWidgetManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import android.app.Notification
+import org.json.JSONArray
+import org.json.JSONObject
+
+private const val REMINDER_PREFS = "planner_local_reminders"
+private const val REMINDER_DATA = "items_json"
+private const val REMINDER_CHANNEL = "planner_due_reminders"
+
+object PlannerReminderScheduler {{
+    private fun code(id: String): Int = id.hashCode() and 0x7fffffff
+
+    private fun alarmIntent(context: Context, item: JSONObject): PendingIntent {{
+        val id = item.optString("id")
+        val intent = Intent(context, PlannerReminderReceiver::class.java).apply {{
+            action = "{pkg}.REMINDER.$id"
+            putExtra("id", id)
+            putExtra("title", item.optString("title", "Planner"))
+            putExtra("body", item.optString("body", "یادآوری Planner"))
+        }}
+        return PendingIntent.getBroadcast(context, code(id), intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }}
+
+    private fun scheduleOne(context: Context, item: JSONObject) {{
+        val at = item.optLong("triggerAt", 0L)
+        if (at <= System.currentTimeMillis()) return
+        val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pi = alarmIntent(context, item)
+        try {{
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && manager.canScheduleExactAlarms()) {{
+                manager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            }} else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {{
+                manager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+            }} else {{
+                manager.set(AlarmManager.RTC_WAKEUP, at, pi)
+            }}
+        }} catch (_: Exception) {{
+            manager.set(AlarmManager.RTC_WAKEUP, at, pi)
+        }}
+    }}
+
+    fun sync(context: Context, items: List<Map<String, Any?>>) {{
+        clear(context)
+        val arr = JSONArray()
+        items.forEach {{ raw ->
+            val o = JSONObject()
+            raw.forEach {{ (k, v) -> o.put(k, v) }}
+            arr.put(o)
+            scheduleOne(context, o)
+        }}
+        context.getSharedPreferences(REMINDER_PREFS, Context.MODE_PRIVATE).edit().putString(REMINDER_DATA, arr.toString()).apply()
+    }}
+
+    fun clear(context: Context) {{
+        val prefs = context.getSharedPreferences(REMINDER_PREFS, Context.MODE_PRIVATE)
+        val arr = try {{ JSONArray(prefs.getString(REMINDER_DATA, "[]")) }} catch (_: Exception) {{ JSONArray() }}
+        val manager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        for (i in 0 until arr.length()) {{
+            val o = arr.optJSONObject(i) ?: continue
+            manager.cancel(alarmIntent(context, o))
+        }}
+        prefs.edit().remove(REMINDER_DATA).apply()
+    }}
+
+    fun restore(context: Context) {{
+        val raw = context.getSharedPreferences(REMINDER_PREFS, Context.MODE_PRIVATE).getString(REMINDER_DATA, "[]") ?: "[]"
+        val arr = try {{ JSONArray(raw) }} catch (_: Exception) {{ JSONArray() }}
+        for (i in 0 until arr.length()) arr.optJSONObject(i)?.let {{ scheduleOne(context, it) }}
+    }}
+}}
+
+class PlannerReminderReceiver : BroadcastReceiver() {{
+    override fun onReceive(context: Context, intent: Intent) {{
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {{
+            nm.createNotificationChannel(NotificationChannel(REMINDER_CHANNEL, "یادآوری موعدها", NotificationManager.IMPORTANCE_HIGH).apply {{
+                description = "یادآوری کارها و رویدادهای Planner"
+            }})
+        }}
+        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent()
+        val content = PendingIntent.getActivity(context, 9001, launch, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val id = intent.getStringExtra("id") ?: "planner"
+        val body = intent.getStringExtra("body") ?: "موعد شما نزدیک است."
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(context, REMINDER_CHANNEL) else Notification.Builder(context)
+        val n = builder
+            .setSmallIcon(android.R.drawable.ic_popup_reminder)
+            .setContentTitle(intent.getStringExtra("title") ?: "Planner")
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setContentIntent(content)
+            .build()
+        nm.notify(code(id), n)
+    }}
+
+    private fun code(id: String): Int = id.hashCode() and 0x7fffffff
+}}
+
+class PlannerBootReceiver : BroadcastReceiver() {{
+    override fun onReceive(context: Context, intent: Intent) {{
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {{
+            PlannerReminderScheduler.restore(context)
         }}
     }}
 }}
@@ -384,6 +526,8 @@ for name,(layout,w,h) in infos.items():
 x=manifest.read_text(encoding='utf-8')
 if 'android.permission.INTERNET' not in x:
     x=x.replace('<manifest xmlns:android="http://schemas.android.com/apk/res/android">','<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET" />',1)
+if 'android.permission.POST_NOTIFICATIONS' not in x:
+    x=x.replace('<manifest xmlns:android="http://schemas.android.com/apk/res/android">','<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />',1)
 x=re.sub(r'(<application\b[^>]*android:label=")[^"]*(")',r'\1Planner\2',x,count=1,flags=re.S)
 # App hardening attributes.
 if 'android:usesCleartextTraffic=' not in x:
@@ -409,6 +553,18 @@ for cls,label,info in providers:
     if cls not in x:
         receiver=f'''\n        <receiver android:name="{pkg}.{cls}" android:label="{label}" android:enabled="true" android:exported="false">\n            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>\n            <meta-data android:name="android.appwidget.provider" android:resource="{info}" />\n        </receiver>\n'''
         x=x.replace('</application>',receiver+'    </application>',1)
+if 'PlannerReminderReceiver' not in x:
+    reminder_receivers=f'''
+        <receiver android:name="{pkg}.PlannerReminderReceiver" android:enabled="true" android:exported="false" />
+        <receiver android:name="{pkg}.PlannerBootReceiver" android:enabled="true" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+'''
+    x=x.replace('</application>',reminder_receivers+'    </application>',1)
+
 manifest.write_text(x,encoding='utf-8')
 
 print('Android integration ready:',pkg)
