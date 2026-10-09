@@ -1,0 +1,15 @@
+PLANNER GITHUB BUILD FIX
+
+The active workflow MUST be:
+.github/workflows/android-build.yml
+
+A visible duplicate is also included at:
+ANDROID_BUILD_WORKFLOW.yml
+
+If you upload files using GitHub's browser and .github is skipped/hidden:
+1. Open .github/workflows/android-build.yml in GitHub.
+2. Replace its entire contents with ANDROID_BUILD_WORKFLOW.yml.
+3. Commit to main.
+
+The workflow intentionally runs Flutter commands with working-directory: mobile.
+Do not use the old root-level Flutter workflow.
