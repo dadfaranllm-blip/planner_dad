@@ -12,7 +12,10 @@ class MainActivity:FlutterActivity(){
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger,"planner/widget").setMethodCallHandler{call,result->
             if(call.method=="setWidgetData"){
                 val p=getSharedPreferences("planner_widget",MODE_PRIVATE)
-                p.edit().putString("tasks_json",call.argument<String>("tasks")?:"[]").putString("events_json",call.argument<String>("events")?:"[]").apply()
+                p.edit().putString("tasks_json",call.argument<String>("tasks")?:"[]")
+                    .putString("events_json",call.argument<String>("events")?:"[]")
+                    .putString("persian_today",call.argument<String>("persianToday")?:"")
+                    .apply()
                 val m=AppWidgetManager.getInstance(this);val ids=m.getAppWidgetIds(ComponentName(this,PlannerWidgetProvider::class.java));ids.forEach{PlannerWidgetProvider.update(this,m,it)}
                 result.success(true)
             } else result.notImplemented()

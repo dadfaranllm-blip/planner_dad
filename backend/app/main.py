@@ -99,6 +99,9 @@ def me(c:HTTPAuthorizationCredentials=Depends(bearer),s:Session=Depends(db)):
     if not u: raise HTTPException(401,'User not found')
     return u
 def log(s,u,action,kind,eid): s.add(Activity(user_id=u.id,action=action,entity_type=kind,entity_id=eid))
+def stable_color(key:str):
+    palette=['#2563EB','#16A34A','#DC2626','#9333EA','#EA580C','#0891B2','#DB2777','#4F46E5','#65A30D','#B45309','#0F766E','#7C3AED']
+    return palette[int(hashlib.sha256(key.encode()).hexdigest()[:8],16)%len(palette)]
 def next_day_8(dt:Optional[datetime]):
     base=dt or now(); d=(base+timedelta(days=1)).date(); return datetime(d.year,d.month,d.day,8,0,tzinfo=base.tzinfo or timezone.utc)
 def ensure_settings(s,user_id):
@@ -122,8 +125,10 @@ class RefreshIn(BaseModel): refresh_token:str; device_name:Optional[str]=None
 class LogoutIn(BaseModel): refresh_token:Optional[str]=None
 class CalendarIn(BaseModel): name:str; color:str='#2563EB'
 class TaskIn(BaseModel): title:str=Field(min_length=1,max_length=255); notes:Optional[str]=None; due_at:Optional[datetime]=None
+class TaskPatch(BaseModel): title:Optional[str]=Field(default=None,min_length=1,max_length=255); notes:Optional[str]=None; due_at:Optional[datetime]=None
 class ContinueIn(BaseModel): due_at:Optional[datetime]=None
 class EventIn(BaseModel): title:str=Field(min_length=1,max_length=255); starts_at:datetime; ends_at:Optional[datetime]=None; calendar_id:Optional[str]=None
+class EventPatch(BaseModel): title:Optional[str]=Field(default=None,min_length=1,max_length=255); starts_at:Optional[datetime]=None; ends_at:Optional[datetime]=None; calendar_id:Optional[str]=None
 class WorkspaceIn(BaseModel): name:str
 class MemberIn(BaseModel): user_id:str; role:str='editor'; color:str='#16A34A'
 class ConversationIn(BaseModel): other_user_id:str
@@ -186,10 +191,23 @@ def _item_dict(obj,kind,s):
 
 @app.get('/tasks')
 def tasks(u:User=Depends(me),s:Session=Depends(db)):
-    rows=s.scalars(select(Task).where(Task.owner_id==u.id).order_by(Task.due_at)).all(); return [_item_dict(x,'task',s) for x in rows]
+    rows=s.scalars(select(Task).where(Task.owner_id==u.id).order_by(Task.created_at.desc())).all(); return [_item_dict(x,'task',s) for x in rows]
 @app.post('/tasks')
 def create_task(x:TaskIn,u:User=Depends(me),s:Session=Depends(db)):
     t=Task(owner_id=u.id,**x.model_dump()); s.add(t); s.flush(); add_default_reminder(s,u,'task',t.id,t.due_at); log(s,u,'created','task',t.id); s.commit(); s.refresh(t); return t
+@app.patch('/tasks/{task_id}')
+def update_task(task_id:str,x:TaskPatch,u:User=Depends(me),s:Session=Depends(db)):
+    t=s.get(Task,task_id)
+    if not t or t.owner_id!=u.id: raise HTTPException(404,'Task not found')
+    data=x.model_dump(exclude_unset=True)
+    for k,v in data.items(): setattr(t,k,v)
+    if 'due_at' in data: reschedule_default(s,u,'task',t.id,t.due_at)
+    log(s,u,'updated','task',t.id); s.commit(); s.refresh(t); return _item_dict(t,'task',s)
+@app.delete('/tasks/{task_id}')
+def delete_task(task_id:str,u:User=Depends(me),s:Session=Depends(db)):
+    t=s.get(Task,task_id)
+    if not t or t.owner_id!=u.id: raise HTTPException(404,'Task not found')
+    cancel_reminders(s,u,'task',t.id); log(s,u,'deleted','task',t.id); s.delete(t); s.commit(); return {'ok':True}
 @app.post('/tasks/{task_id}/complete')
 def complete_task(task_id:str,u:User=Depends(me),s:Session=Depends(db)):
     t=s.get(Task,task_id)
@@ -202,7 +220,7 @@ def continue_task(task_id:str,x:ContinueIn,u:User=Depends(me),s:Session=Depends(
     t.due_at=x.due_at or next_day_8(t.due_at); t.status='open'; t.completed_at=None; reschedule_default(s,u,'task',t.id,t.due_at); log(s,u,'continued','task',t.id); s.commit(); return {'ok':True,'due_at':t.due_at}
 @app.get('/events')
 def events(u:User=Depends(me),s:Session=Depends(db)):
-    rows=s.scalars(select(Event).where(Event.owner_id==u.id).order_by(Event.starts_at)).all(); return [_item_dict(x,'event',s) for x in rows]
+    rows=s.scalars(select(Event).where(Event.owner_id==u.id).order_by(Event.created_at.desc())).all(); return [_item_dict(x,'event',s) for x in rows]
 @app.post('/events')
 def create_event(x:EventIn,u:User=Depends(me),s:Session=Depends(db)):
     if x.ends_at and x.ends_at<x.starts_at: raise HTTPException(422,'ends_at must be after starts_at')
@@ -210,6 +228,20 @@ def create_event(x:EventIn,u:User=Depends(me),s:Session=Depends(db)):
         c=s.get(Calendar,x.calendar_id)
         if not c or c.owner_id!=u.id: raise HTTPException(404,'Calendar not found')
     e=Event(owner_id=u.id,**x.model_dump()); s.add(e); s.flush(); add_default_reminder(s,u,'event',e.id,e.starts_at); log(s,u,'created','event',e.id); s.commit(); s.refresh(e); return e
+@app.patch('/events/{eid}')
+def update_event(eid:str,x:EventPatch,u:User=Depends(me),s:Session=Depends(db)):
+    e=s.get(Event,eid)
+    if not e or e.owner_id!=u.id: raise HTTPException(404,'Event not found')
+    data=x.model_dump(exclude_unset=True)
+    for k,v in data.items(): setattr(e,k,v)
+    if e.ends_at and e.starts_at and e.ends_at<e.starts_at: raise HTTPException(422,'ends_at must be after starts_at')
+    if 'starts_at' in data: reschedule_default(s,u,'event',e.id,e.starts_at)
+    log(s,u,'updated','event',e.id); s.commit(); s.refresh(e); return _item_dict(e,'event',s)
+@app.delete('/events/{eid}')
+def delete_event(eid:str,u:User=Depends(me),s:Session=Depends(db)):
+    e=s.get(Event,eid)
+    if not e or e.owner_id!=u.id: raise HTTPException(404,'Event not found')
+    cancel_reminders(s,u,'event',e.id); log(s,u,'deleted','event',e.id); s.delete(e); s.commit(); return {'ok':True}
 @app.post('/events/{eid}/complete')
 def complete_event(eid:str,u:User=Depends(me),s:Session=Depends(db)):
     e=s.get(Event,eid)

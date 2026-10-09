@@ -38,6 +38,11 @@ class LocalStore {
     await d.insert('cache',{'kind':kind,'id':x['id'].toString(),'body':jsonEncode(x),'updated_at':DateTime.now().millisecondsSinceEpoch},conflictAlgorithm:ConflictAlgorithm.replace);
   }
 
+  static Future<void> delete(String kind, String id) async {
+    final d = await db();
+    await d.delete('cache', where: 'kind=? AND id=?', whereArgs: [kind, id]);
+  }
+
   static Future<void> enqueue(String method,String path,[Map<String,dynamic>? body]) async {
     final d=await db();
     await d.insert('outbox',{'method':method,'path':path,'body':body==null?null:jsonEncode(body),'created_at':DateTime.now().millisecondsSinceEpoch});
