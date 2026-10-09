@@ -1,6 +1,6 @@
 name: Planner Android Build 1.6.0
 
-on:
+'on':
   workflow_dispatch:
   push:
     branches:
@@ -13,6 +13,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 50
+
     env:
       EXPECTED_VERSION_NAME: "1.6.0"
       EXPECTED_VERSION_CODE: "18"
@@ -67,38 +68,52 @@ jobs:
             --org com.plannersuite \
             --project-name planner_suite \
             "$TMP/scaffold"
+
           rm -rf android
           cp -R "$TMP/scaffold/android" android
+
           python3 tool/prepare_android.py android
+
           find android/app/src/main/res -type f -name 'ic_launcher*.xml' -delete || true
 
       - name: Verify Android integration
         shell: bash
         run: |
           set -euxo pipefail
+
           MANIFEST=android/app/src/main/AndroidManifest.xml
+
           for P in PlannerWidgetProvider PlannerClockWidgetProvider PlannerTasksWidgetProvider PlannerAgendaWidgetProvider; do
             grep -q "$P" "$MANIFEST"
           done
+
           for F in planner_widget_overview planner_widget_clock planner_widget_tasks planner_widget_agenda; do
             test -f "android/app/src/main/res/layout/${F}.xml"
             test -f "android/app/src/main/res/xml/${F}_info.xml"
           done
+
           grep -q 'usesCleartextTraffic="false"' "$MANIFEST"
           grep -q 'allowBackup="false"' "$MANIFEST"
+
           test -f android/app/src/main/res/xml/network_security_config.xml
+
           find android/app/src/main/kotlin -name SecureTokenStore.kt -print -quit | grep -q .
           grep -Rqs 'AndroidKeyStore' android/app/src/main/kotlin
           grep -Rqs 'AES/GCM/NoPadding' android/app/src/main/kotlin
+
           grep -q 'android.permission.POST_NOTIFICATIONS' "$MANIFEST"
           grep -q 'PlannerReminderReceiver' "$MANIFEST"
           grep -q 'PlannerBootReceiver' "$MANIFEST"
+
           grep -Rqs 'planner_due_reminders' android/app/src/main/kotlin
           grep -Rqs 'setExactAndAllowWhileIdle' android/app/src/main/kotlin
+
           grep -Rqs 'layoutDirection="rtl"' android/app/src/main/res/layout/planner_widget_tasks.xml
           grep -Rqs 'textSize="24sp"' android/app/src/main/res/layout/planner_widget_tasks.xml
+
           test -f android/app/src/main/res/drawable/planner_widget_section_bg.xml
-          echo "4 RTL WIDGETS + NATIVE REMINDERS + KEYSTORE REFRESH + NETWORK HARDENING OK"
+
+          echo "ANDROID INTEGRATION OK"
 
       - name: Normalize scaffold test
         shell: bash
@@ -107,6 +122,7 @@ jobs:
           mkdir -p test
           cat > test/widget_test.dart <<'EOF'
           import 'package:flutter_test/flutter_test.dart';
+
           void main() {
             test('planner test environment is working', () {
               expect(true, isTrue);
@@ -117,61 +133,76 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
-      - name: Analyze
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+      - name: Analyze ROOT app only
+        shell: bash
+        run: |
+          set -euxo pipefail
+          flutter analyze \
+            --no-fatal-infos \
+            --no-fatal-warnings \
+            lib test
 
-      - name: Test
-        run: flutter test
+      - name: Test ROOT app only
+        run: flutter test test
 
       - name: Build APK
-        run: >
-          flutter build apk
-          --release
-          --dart-define=API_BASE_URL=${{ env.API_BASE_URL }}
+        run: |
+          set -euxo pipefail
+          flutter build apk \
+            --release \
+            --dart-define=API_BASE_URL="${API_BASE_URL}"
 
       - name: Verify FINAL APK
         shell: bash
         run: |
           set -euxo pipefail
+
           APK=build/app/outputs/flutter-apk/app-release.apk
           test -f "$APK"
+
           BUILD_TOOLS="$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
           AAPT2="$ANDROID_HOME/build-tools/$BUILD_TOOLS/aapt2"
+
           "$AAPT2" dump badging "$APK" | tee final-apk-badging.txt
           "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" | tee final-apk-manifest.txt
+
           grep -q "versionName='${EXPECTED_VERSION_NAME}'" final-apk-badging.txt
           grep -q "versionCode='${EXPECTED_VERSION_CODE}'" final-apk-badging.txt
           grep -q "provides-component:'app-widget'" final-apk-badging.txt
+
           for P in PlannerWidgetProvider PlannerClockWidgetProvider PlannerTasksWidgetProvider PlannerAgendaWidgetProvider; do
             grep -q "$P" final-apk-manifest.txt
           done
+
           grep -q "android.appwidget.action.APPWIDGET_UPDATE" final-apk-manifest.txt
           grep -q "android.appwidget.provider" final-apk-manifest.txt
           grep -q "PlannerReminderReceiver" final-apk-manifest.txt
           grep -q "android.permission.POST_NOTIFICATIONS" final-apk-manifest.txt
+
           echo "FINAL APK VERIFICATION PASS"
 
       - name: Build AAB
-        run: >
-          flutter build appbundle
-          --release
-          --dart-define=API_BASE_URL=${{ env.API_BASE_URL }}
+        run: |
+          set -euxo pipefail
+          flutter build appbundle \
+            --release \
+            --dart-define=API_BASE_URL="${API_BASE_URL}"
 
       - name: Checksums and report
         shell: bash
         run: |
           set -euxo pipefail
-          sha256sum build/app/outputs/flutter-apk/app-release.apk build/app/outputs/bundle/release/app-release.aab | tee SHA256SUMS.txt
+
+          sha256sum \
+            build/app/outputs/flutter-apk/app-release.apk \
+            build/app/outputs/bundle/release/app-release.aab \
+            | tee SHA256SUMS.txt
+
           {
             echo "Planner Android ${EXPECTED_VERSION_NAME}+${EXPECTED_VERSION_CODE}"
             echo "Git commit: $GITHUB_SHA"
-            echo "Widgets: overview, clock/date, tasks, agenda"
-            echo "Security: Android Keystore AES-GCM; refresh-token rotation; cleartext disabled; backup disabled"
-            echo "Calendar: official 1405 occasions/holidays; RTL Saturday-to-Friday; Today button + direct month/year jump"
-            echo "Notifications: local Android reminder one day before at 17:00; boot restore enabled"
-            echo "Workspace client: collaborative board/documents; backend shared-items/room API compatible"
-            echo "Auth: email/phone OTP registration + profile"
-            echo "Chat: 2s refresh + typing + reply + edit/delete + seen + search"
+            echo "Build source: ROOT Flutter app"
+            echo "Nested mobile/ project intentionally excluded from analysis"
             cat SHA256SUMS.txt
           } > BUILD-VERIFICATION.txt
 
