@@ -1,0 +1,20 @@
+Planner final build target
+Version: 1.7.0+19
+Android applicationId: com.plannersuite.app
+
+The GitHub workflow builds ONLY mobile/.
+After installing the APK, the login screen must show:
+نسخه ۱.۷.۰ (۱۹)
+
+If that text is not visible, the old APK is still installed/running.
+
+Included requested changes:
+- Persian/Jalali dates in app and widget
+- Add Task/Event moved away from bottom system navigation; bottom sheet includes system bottom inset
+- Distinct deterministic workspace member colors
+- RTL tabbed scrollable widget: Calendar / Tasks / Events
+- Persian widget dates
+- Home Task/Event sections clickable
+- Task/Event lists newest-created first
+- Task/Event edit and delete with confirmation and local-first outbox sync
+- Central Persian error handler

@@ -15,6 +15,7 @@ jobs:
     timeout-minutes: 60
     env:
       API_BASE_URL: https://planner.datholding.ir/api
+      EXPECTED_VERSION: "1.7.0+19"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,6 +56,16 @@ jobs:
         working-directory: mobile
         run: flutter pub get
 
+      - name: Verify version
+        working-directory: mobile
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ACTUAL="$(awk '/^version:/ {print $2}' pubspec.yaml | tr -d '\r')"
+          test "$ACTUAL" = "$EXPECTED_VERSION"
+          echo "Building Planner $ACTUAL"
+
+
       - name: Analyze mobile app
         working-directory: mobile
         run: flutter analyze --no-fatal-infos --no-fatal-warnings lib
@@ -74,7 +85,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-APK
+          name: Planner-Android-APK-1.7.0-19
           path: mobile/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
@@ -82,7 +93,7 @@ jobs:
       - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: Planner-Android-AAB
+          name: Planner-Android-AAB-1.7.0-19
           path: mobile/build/app/outputs/bundle/release/app-release.aab
           if-no-files-found: error
           retention-days: 14

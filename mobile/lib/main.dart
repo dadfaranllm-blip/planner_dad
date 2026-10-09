@@ -11,6 +11,9 @@ import 'social_auth_service.dart';
 import 'sync_service.dart';
 import 'voice_call_service.dart';
 
+const appVersion = '1.7.0';
+const appBuild = 19;
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   PushService.installBackgroundHandler();
@@ -247,6 +250,12 @@ class _LoginState extends State<Login> {
                         fontSize: 30,
                         fontWeight: FontWeight.w700,
                       ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'نسخه ۱.۷.۰ (۱۹)',
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontSize: 12, color: Colors.black54),
                     ),
                     const SizedBox(height: 8),
                     const Text(
@@ -498,7 +507,8 @@ class _HomeState extends State<Home> {
       useSafeArea: true,
       builder: (sheetContext) {
         return StatefulBuilder(builder: (context, setSheetState) {
-          final bottom = MediaQuery.of(sheetContext).viewInsets.bottom;
+          final media = MediaQuery.of(sheetContext);
+          final bottom = media.viewInsets.bottom + media.viewPadding.bottom;
           return Padding(
             padding: EdgeInsets.fromLTRB(20, 20, 20, bottom + 24),
             child: Column(mainAxisSize: MainAxisSize.min, children: [
