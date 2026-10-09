@@ -1,6 +1,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent" android:layout_height="match_parent"
-    android:orientation="vertical" android:padding="12dp" android:background="@drawable/widget_bg">
+    android:orientation="vertical" android:padding="12dp" android:background="@drawable/widget_bg"
+    android:layoutDirection="rtl" android:textDirection="rtl">
 
     <TextClock android:id="@+id/clock" android:layout_width="match_parent" android:layout_height="wrap_content"
         android:textSize="54sp" android:textStyle="bold" android:includeFontPadding="false"
@@ -11,16 +12,19 @@
         android:format24Hour="EEEE، d MMMM" android:format12Hour="EEEE، d MMMM" android:textLocale="fa-IR" />
 
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:orientation="horizontal" android:gravity="center" android:layout_marginTop="6dp">
+        android:orientation="horizontal" android:gravity="center" android:layout_marginTop="6dp"
+        android:layoutDirection="rtl" android:textDirection="rtl">
         <TextView android:id="@+id/tab_calendar" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="تقویم" android:gravity="center" android:textStyle="bold" android:padding="7dp" />
         <TextView android:id="@+id/tab_tasks" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="کارها" android:gravity="center" android:textStyle="bold" android:padding="7dp" />
         <TextView android:id="@+id/tab_events" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="رویدادها" android:gravity="center" android:textStyle="bold" android:padding="7dp" />
     </LinearLayout>
 
     <TextView android:id="@+id/widget_title" android:layout_width="match_parent" android:layout_height="wrap_content"
-        android:textStyle="bold" android:textSize="14sp" android:gravity="end" android:layout_marginTop="4dp" />
+        android:textStyle="bold" android:textSize="14sp" android:gravity="end" android:layout_marginTop="4dp"
+        android:layoutDirection="rtl" android:textDirection="rtl" />
 
     <ListView android:id="@+id/widget_list" android:layout_width="match_parent" android:layout_height="0dp"
         android:layout_weight="1" android:layout_marginTop="4dp" android:dividerHeight="1dp"
-        android:scrollbars="vertical" android:fadeScrollbars="false" />
+        android:scrollbars="vertical" android:fadeScrollbars="false"
+        android:layoutDirection="rtl" android:textDirection="rtl" />
 </LinearLayout>

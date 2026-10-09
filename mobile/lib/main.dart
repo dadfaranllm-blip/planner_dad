@@ -264,9 +264,20 @@ class _HomeState extends State<Home> {
 
     if (!mounted) return;
 
+    int newestFirst(Map<String, dynamic> a, Map<String, dynamic> b, String primary) {
+      String value(Map<String, dynamic> x) =>
+          (x['created_at'] ?? x[primary] ?? x['updated_at'] ?? '').toString();
+      return value(b).compareTo(value(a));
+    }
+
+    final nextTasks = List<Map<String, dynamic>>.from(all[0])
+      ..sort((a, b) => newestFirst(a, b, 'due_at'));
+    final nextEvents = List<Map<String, dynamic>>.from(all[1])
+      ..sort((a, b) => newestFirst(a, b, 'starts_at'));
+
     setState(() {
-      tasks = all[0];
-      events = all[1];
+      tasks = nextTasks;
+      events = nextEvents;
       workspaces = all[2];
       conversations = all[3];
     });

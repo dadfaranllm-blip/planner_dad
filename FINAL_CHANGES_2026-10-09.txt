@@ -1,0 +1,12 @@
+Final integrated changes:
+- Local-first / SQLite / outbox sync retained
+- Persistent session retained
+- Scrollable Task/Event widget retained
+- Large Persian clock retained
+- Widget forced RTL (layoutDirection + textDirection)
+- Add Task safe-area behavior retained
+- Workspace member colors/sharing retained
+- Push/voice/social auth/security files retained
+- Task list newest-first
+- Event list newest-first
+- Root-only GitHub Actions workflow included
