@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+set -eu
+APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROPS="$APP_HOME/gradle/wrapper/gradle-wrapper.properties"
+URL=$(sed -n 's/^distributionUrl=//p' "$PROPS" | sed 's#\\:#:#g')
+VER=$(printf '%s' "$URL" | sed -n 's/.*gradle-\([0-9][0-9.]*\)-bin.zip.*/\1/p')
+BASE="${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists/planner-gradle-$VER"
+ZIP="$BASE/gradle-$VER-bin.zip"
+BIN="$BASE/gradle-$VER/bin/gradle"
+if [ ! -x "$BIN" ]; then
+  mkdir -p "$BASE"
+  if [ ! -f "$ZIP" ]; then
+    if command -v curl >/dev/null 2>&1; then curl -fL "$URL" -o "$ZIP";
+    elif command -v wget >/dev/null 2>&1; then wget -O "$ZIP" "$URL";
+    else echo "curl or wget is required to bootstrap Gradle" >&2; exit 1; fi
+  fi
+  command -v unzip >/dev/null 2>&1 || { echo "unzip is required" >&2; exit 1; }
+  unzip -q -o "$ZIP" -d "$BASE"
+fi
+exec "$BIN" "$@"

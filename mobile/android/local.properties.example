@@ -1,0 +1,4 @@
+# Copy to local.properties only when invoking Gradle directly.
+# `flutter pub get` / `flutter build apk` normally manages this file.
+flutter.sdk=C:\\src\\flutter
+sdk.dir=C:\\Users\\YOUR_USER\\AppData\\Local\\Android\\Sdk

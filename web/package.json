@@ -1,0 +1,19 @@
+{
+  "name": "planner-suite-web",
+  "version": "0.4.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "typescript": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "lucide-react": "latest",
+    "jalaali-js": "latest"
+  },
+  "devDependencies": {}
+}
