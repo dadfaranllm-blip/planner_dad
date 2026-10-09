@@ -6,7 +6,6 @@ import 'local_store.dart';
 class SyncService {
   static const _widget=MethodChannel('planner/widget');
   static Future<void> sync() async {
-    // Push local mutations first; a failed item stays in the outbox.
     for(final op in await LocalStore.outbox()){
       try{
         final raw=op['body'] as String?;
@@ -15,12 +14,16 @@ class SyncService {
       } catch(_) { break; }
     }
     try{
-      final r=await Future.wait([Api.call('/tasks'),Api.call('/events')]);
+      final r=await Future.wait([
+        Api.call('/tasks'), Api.call('/events'), Api.call('/workspaces/summary'), Api.call('/conversations')
+      ]);
       await LocalStore.replaceAll('task',List<dynamic>.from(r[0]??[]));
       await LocalStore.replaceAll('event',List<dynamic>.from(r[1]??[]));
+      await LocalStore.replaceAll('workspace',List<dynamic>.from(r[2]??[]));
+      await LocalStore.replaceAll('conversation',List<dynamic>.from(r[3]??[]));
       await LocalStore.meta('last_sync',DateTime.now().toIso8601String());
       await updateWidget();
-    }catch(_){/* offline: local data remains authoritative for this launch */}
+    }catch(_){/* Local-first: cached data stays usable while offline. */}
   }
 
   static Future<void> updateWidget() async {

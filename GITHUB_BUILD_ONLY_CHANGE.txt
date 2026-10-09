@@ -1,0 +1,9 @@
+This package is based on planner-suite-integrated-android-complete.
+No existing application source file was modified for this GitHub-build fix.
+Only these files were added:
+  .github/workflows/android-build.yml
+  GITHUB_BUILD_ONLY_CHANGE.txt
+
+Important: GitHub Actions can only see the workflow when .github/workflows/android-build.yml
+exists as a real file in the repository. Uploading this ZIP itself to GitHub does NOT extract it.
+Extract the archive first, then commit/push the extracted files.

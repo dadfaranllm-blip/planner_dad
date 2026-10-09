@@ -6,6 +6,8 @@ from fastapi import FastAPI, Depends, HTTPException, Header, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import hashlib, hmac, secrets
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import create_engine, String, DateTime, ForeignKey, Text, Boolean, Integer, select, or_, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
@@ -66,12 +68,18 @@ class Message(Base):
 class Activity(Base):
     __tablename__='activities'; id:Mapped[str]=mapped_column(String(36),primary_key=True,default=uid); user_id:Mapped[str]=mapped_column(ForeignKey('users.id'),index=True); action:Mapped[str]=mapped_column(String(80)); entity_type:Mapped[str]=mapped_column(String(40)); entity_id:Mapped[str]=mapped_column(String(36)); created_at:Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
 Base.metadata.create_all(engine)
-app=FastAPI(title='Planner Suite API',version='0.5.0'); app.add_middleware(CORSMiddleware,allow_origins=['*'],allow_methods=['*'],allow_headers=['*'])
+app=FastAPI(title='Planner Suite API',version='1.0.0')
+_origins=[x.strip() for x in os.getenv('CORS_ORIGINS','http://localhost:3000,http://127.0.0.1:3000').split(',') if x.strip()]
+app.add_middleware(CORSMiddleware,allow_origins=_origins,allow_credentials=True,allow_methods=['GET','POST','PUT','PATCH','DELETE','OPTIONS'],allow_headers=['Authorization','Content-Type'])
 bearer=HTTPBearer()
+_password_hasher=PasswordHasher(time_cost=3,memory_cost=65536,parallelism=2,hash_len=32,salt_len=16)
 def hash_password(password):
-    salt=secrets.token_hex(16); digest=hashlib.pbkdf2_hmac('sha256',password.encode(),salt.encode(),200000).hex(); return f'pbkdf2_sha256${salt}${digest}'
+    return _password_hasher.hash(password)
 def verify_password(password,stored):
     try:
+        if stored.startswith('$argon2'):
+            return _password_hasher.verify(stored,password)
+        # Backward-compatible verification for existing installs; successful login rehashes below.
         _,salt,digest=stored.split('$',2); actual=hashlib.pbkdf2_hmac('sha256',password.encode(),salt.encode(),200000).hex(); return hmac.compare_digest(actual,digest)
     except Exception: return False
 def db():
@@ -125,7 +133,7 @@ class SnoozeIn(BaseModel): minutes:int=Field(default=10,ge=1,le=10080)
 class SettingsIn(BaseModel):
     timezone:str='Asia/Tehran'; default_reminder_enabled:bool=True; default_reminder_days_before:int=Field(default=1,ge=0,le=365); default_reminder_hour:int=Field(default=17,ge=0,le=23); default_reminder_minute:int=Field(default=0,ge=0,le=59)
 @app.get('/health')
-def health(): return {'ok':True,'version':'0.4.0'}
+def health(): return {'ok':True,'version':'1.0.0'}
 @app.post('/auth/register')
 def register(x:Register,s:Session=Depends(db)):
     if s.scalar(select(User).where(User.email==x.email)): raise HTTPException(409,'Email exists')
@@ -134,6 +142,8 @@ def register(x:Register,s:Session=Depends(db)):
 def login(x:Login,s:Session=Depends(db)):
     u=s.scalar(select(User).where(User.email==x.email));
     if not u or not verify_password(x.password,u.password_hash): raise HTTPException(401,'Invalid credentials')
+    if not u.password_hash.startswith('$argon2'):
+        u.password_hash=hash_password(x.password); s.commit()
     return issue_session(s,u,x.device_name,x.platform)
 @app.post('/auth/refresh')
 def refresh_auth(x:RefreshIn,s:Session=Depends(db)):
@@ -158,8 +168,25 @@ def calendars(u:User=Depends(me),s:Session=Depends(db)): return s.scalars(select
 @app.post('/calendars')
 def create_calendar(x:CalendarIn,u:User=Depends(me),s:Session=Depends(db)):
     c=Calendar(owner_id=u.id,**x.model_dump()); s.add(c); s.flush(); log(s,u,'created','calendar',c.id); s.commit(); s.refresh(c); return c
+def _share_people(s:Session,kind:str,eid:str):
+    rows=s.scalars(select(Share).where(Share.entity_type==kind,Share.entity_id==eid)).all() if 'Share' in globals() else []
+    out=[]
+    for sh in rows:
+        person=s.get(User,sh.shared_with_id)
+        if person: out.append({'user_id':person.id,'name':person.name,'email':person.email,'color':person.color,'permission':sh.permission})
+    return out
+
+def _item_dict(obj,kind,s):
+    fields=['id','title','status','created_at','completed_at']
+    if kind=='task': fields += ['notes','due_at','reminder_previous_day_17']
+    else: fields += ['starts_at','ends_at','calendar_id','source','external_id']
+    d={k:getattr(obj,k,None) for k in fields}
+    d['shared_with']=_share_people(s,kind,obj.id)
+    return d
+
 @app.get('/tasks')
-def tasks(u:User=Depends(me),s:Session=Depends(db)): return s.scalars(select(Task).where(Task.owner_id==u.id).order_by(Task.due_at)).all()
+def tasks(u:User=Depends(me),s:Session=Depends(db)):
+    rows=s.scalars(select(Task).where(Task.owner_id==u.id).order_by(Task.due_at)).all(); return [_item_dict(x,'task',s) for x in rows]
 @app.post('/tasks')
 def create_task(x:TaskIn,u:User=Depends(me),s:Session=Depends(db)):
     t=Task(owner_id=u.id,**x.model_dump()); s.add(t); s.flush(); add_default_reminder(s,u,'task',t.id,t.due_at); log(s,u,'created','task',t.id); s.commit(); s.refresh(t); return t
@@ -174,7 +201,8 @@ def continue_task(task_id:str,x:ContinueIn,u:User=Depends(me),s:Session=Depends(
     if not t or t.owner_id!=u.id: raise HTTPException(404,'Task not found')
     t.due_at=x.due_at or next_day_8(t.due_at); t.status='open'; t.completed_at=None; reschedule_default(s,u,'task',t.id,t.due_at); log(s,u,'continued','task',t.id); s.commit(); return {'ok':True,'due_at':t.due_at}
 @app.get('/events')
-def events(u:User=Depends(me),s:Session=Depends(db)): return s.scalars(select(Event).where(Event.owner_id==u.id).order_by(Event.starts_at)).all()
+def events(u:User=Depends(me),s:Session=Depends(db)):
+    rows=s.scalars(select(Event).where(Event.owner_id==u.id).order_by(Event.starts_at)).all(); return [_item_dict(x,'event',s) for x in rows]
 @app.post('/events')
 def create_event(x:EventIn,u:User=Depends(me),s:Session=Depends(db)):
     if x.ends_at and x.ends_at<x.starts_at: raise HTTPException(422,'ends_at must be after starts_at')
@@ -195,6 +223,26 @@ def continue_event(eid:str,x:ContinueIn,u:User=Depends(me),s:Session=Depends(db)
 @app.get('/workspaces')
 def workspaces(u:User=Depends(me),s:Session=Depends(db)):
     ids=select(WorkspaceMember.workspace_id).where(WorkspaceMember.user_id==u.id); return s.scalars(select(Workspace).where(Workspace.id.in_(ids))).all()
+@app.get('/workspaces/summary')
+def workspace_summary(u:User=Depends(me),s:Session=Depends(db)):
+    ids=list(s.scalars(select(WorkspaceMember.workspace_id).where(WorkspaceMember.user_id==u.id)).all())
+    out=[]
+    for wid in ids:
+        w=s.get(Workspace,wid)
+        members=[]
+        for m in s.scalars(select(WorkspaceMember).where(WorkspaceMember.workspace_id==wid)).all():
+            person=s.get(User,m.user_id)
+            if person: members.append({'user_id':person.id,'name':person.name,'email':person.email,'role':m.role,'color':m.color})
+        docs=[]
+        if 'WorkspaceDocument' in globals():
+            for d in s.scalars(select(WorkspaceDocument).where(WorkspaceDocument.workspace_id==wid)).all():
+                last=s.scalar(select(DocumentVersion).where(DocumentVersion.document_id==d.id).order_by(DocumentVersion.revision.desc()))
+                author=s.get(User,last.author_id) if last else None
+                am=membership(s,wid,last.author_id) if last else None
+                docs.append({'id':d.id,'title':d.title,'revision':d.revision,'updated_at':d.updated_at,'last_editor':({'id':author.id,'name':author.name,'color':am.color if am else author.color} if author else None)})
+        out.append({'id':w.id,'name':w.name,'members':members,'documents':docs})
+    return out
+
 @app.post('/workspaces')
 def create_workspace(x:WorkspaceIn,u:User=Depends(me),s:Session=Depends(db)):
     w=Workspace(owner_id=u.id,name=x.name); s.add(w); s.flush(); s.add(WorkspaceMember(workspace_id=w.id,user_id=u.id,role='owner',color=u.color)); log(s,u,'created','workspace',w.id); s.commit(); return {'id':w.id,'name':w.name}
@@ -206,7 +254,12 @@ def add_member(wid:str,x:MemberIn,u:User=Depends(me),s:Session=Depends(db)):
     if s.scalar(select(WorkspaceMember).where(WorkspaceMember.workspace_id==wid,WorkspaceMember.user_id==x.user_id)): raise HTTPException(409,'Already member')
     m=WorkspaceMember(workspace_id=wid,**x.model_dump()); s.add(m); log(s,u,'member_added','workspace',wid); s.commit(); return {'ok':True}
 @app.get('/conversations')
-def conversations(u:User=Depends(me),s:Session=Depends(db)): return s.scalars(select(Conversation).where(or_(Conversation.user1_id==u.id,Conversation.user2_id==u.id))).all()
+def conversations(u:User=Depends(me),s:Session=Depends(db)):
+    rows=s.scalars(select(Conversation).where(or_(Conversation.user1_id==u.id,Conversation.user2_id==u.id))).all(); out=[]
+    for c in rows:
+        oid=c.user2_id if c.user1_id==u.id else c.user1_id; other=s.get(User,oid)
+        out.append({'id':c.id,'other':({'id':other.id,'name':other.name,'email':other.email,'color':other.color} if other else None),'created_at':c.created_at})
+    return out
 @app.post('/conversations')
 def create_conversation(x:ConversationIn,u:User=Depends(me),s:Session=Depends(db)):
     if x.other_user_id==u.id: raise HTTPException(422,'Cannot message yourself')
@@ -806,3 +859,32 @@ def auth_apple_callback(code:str=Form(...),state:str=Form(...),id_token_value:Op
         except Exception: pass
     u=social_user(s,'apple',claims['sub'],claims.get('email'),name,bool(claims.get('email_verified',True)))
     return issue_session(s,u,platform='oauth')
+
+
+class GoogleMobileLoginIn(BaseModel): id_token:str; device_name:Optional[str]='android'; platform:Optional[str]='android'
+class AppleMobileLoginIn(BaseModel): identity_token:str; first_name:Optional[str]=None; last_name:Optional[str]=None; device_name:Optional[str]='android'; platform:Optional[str]='android'
+
+@app.post('/auth/google/mobile')
+def auth_google_mobile(x:GoogleMobileLoginIn,s:Session=Depends(db)):
+    cid=os.getenv('GOOGLE_CLIENT_ID') or os.getenv('GOOGLE_LOGIN_CLIENT_ID')
+    if not cid: raise HTTPException(503,'Google login is not configured')
+    try:
+        from google.oauth2 import id_token as google_id_token
+        from google.auth.transport import requests as google_requests
+        claims=google_id_token.verify_oauth2_token(x.id_token,google_requests.Request(),cid)
+    except Exception: raise HTTPException(400,'Invalid Google identity token')
+    if not claims.get('sub'): raise HTTPException(400,'Google subject missing')
+    u=social_user(s,'google',claims['sub'],claims.get('email'),claims.get('name'),bool(claims.get('email_verified')))
+    return issue_session(s,u,x.device_name,x.platform)
+
+@app.post('/auth/apple/mobile')
+def auth_apple_mobile(x:AppleMobileLoginIn,s:Session=Depends(db)):
+    client=os.getenv('APPLE_CLIENT_ID')
+    if not client: raise HTTPException(503,'Apple login is not configured')
+    try:
+        jwk=jwt.PyJWKClient('https://appleid.apple.com/auth/keys').get_signing_key_from_jwt(x.identity_token)
+        claims=jwt.decode(x.identity_token,jwk.key,algorithms=['RS256'],audience=client,issuer='https://appleid.apple.com')
+    except Exception: raise HTTPException(400,'Invalid Apple identity token')
+    name=(' '.join([x.first_name or '',x.last_name or ''])).strip() or None
+    u=social_user(s,'apple',claims['sub'],claims.get('email'),name,bool(claims.get('email_verified',True)))
+    return issue_session(s,u,x.device_name,x.platform)
