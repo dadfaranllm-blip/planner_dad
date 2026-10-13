@@ -320,6 +320,7 @@ import java.util.Date
 private const val PREFS = "planner_widget"
 private const val API_BASE = "https://planner.datholding.ir/api"
 private const val ACTION_REFRESH = "{pkg}.PLANNER_WIDGET_REFRESH"
+private const val ACTION_TAB = "{pkg}.PLANNER_WIDGET_TAB"
 
 object PlannerWidgetData {{
     fun persianDate(): String = try {{
@@ -334,6 +335,11 @@ object PlannerWidgetData {{
 
     private fun pendingRefresh(context: Context, requestCode: Int): PendingIntent {{
         val intent = Intent(context, PlannerWidgetProvider::class.java).apply {{ action = ACTION_REFRESH }}
+        return PendingIntent.getBroadcast(context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }}
+
+    private fun pendingTab(context: Context, selected: String, requestCode: Int): PendingIntent {{
+        val intent = Intent(context, PlannerWidgetProvider::class.java).apply {{ action = ACTION_TAB; putExtra("selected", selected) }}
         return PendingIntent.getBroadcast(context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }}
 
@@ -353,8 +359,12 @@ object PlannerWidgetData {{
             val v = RemoteViews(context.packageName, R.layout.planner_widget_overview)
             v.setTextViewText(R.id.widget_date, persianDate())
             v.setTextViewText(R.id.widget_summary, "${{p.getInt("tasks",0)}} کار • ${{p.getInt("events",0)}} رویداد")
-            bindRows(v, tasks, intArrayOf(R.id.widget_task_1,R.id.widget_task_2,R.id.widget_task_3), "کاری ثبت نشده")
-            bindRows(v, events, intArrayOf(R.id.widget_event_1,R.id.widget_event_2), "رویدادی ثبت نشده")
+            val showTasks = p.getString("selected_tab", "tasks") != "events"
+            v.setTextViewText(R.id.widget_tab_tasks, if (showTasks) "● کارها" else "کارها")
+            v.setTextViewText(R.id.widget_tab_events, if (showTasks) "رویدادها" else "● رویدادها")
+            v.setOnClickPendingIntent(R.id.widget_tab_tasks, pendingTab(context,"tasks",110))
+            v.setOnClickPendingIntent(R.id.widget_tab_events, pendingTab(context,"events",111))
+            bindRows(v, if (showTasks) tasks else events, intArrayOf(R.id.widget_task_1,R.id.widget_task_2,R.id.widget_task_3,R.id.widget_event_1,R.id.widget_event_2), if (showTasks) "کاری ثبت نشده" else "رویدادی ثبت نشده")
             v.setOnClickPendingIntent(R.id.widget_root, pendingActivity(context,null,100))
             v.setOnClickPendingIntent(R.id.widget_add_task, pendingActivity(context,"planner://add-task",101))
             v.setOnClickPendingIntent(R.id.widget_add_event, pendingActivity(context,"planner://add-event",102))
@@ -405,8 +415,8 @@ object PlannerWidgetData {{
             try {{
                 val tasksRaw = fetch(context, "/tasks")
                 val eventsRaw = fetch(context, "/events")
-                val tasks = compact(tasksRaw,"due_at",4)
-                val events = compact(eventsRaw,"starts_at",4)
+                val tasks = compact(tasksRaw,"due_at",12)
+                val events = compact(eventsRaw,"starts_at",12)
                 context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit()
                     .putInt("tasks",countOpen(tasksRaw)).putInt("events",countOpen(eventsRaw))
                     .putString("date",persianDate())
@@ -477,7 +487,7 @@ object PlannerWidgetData {{
 
 class PlannerWidgetProvider : AppWidgetProvider() {{
     override fun onUpdate(context:Context,manager:AppWidgetManager,ids:IntArray) {{ PlannerWidgetData.renderOverview(context,manager,ids); PlannerWidgetData.refreshAsync(context,goAsync()) }}
-    override fun onReceive(context:Context,intent:Intent) {{ super.onReceive(context,intent); if(intent.action==ACTION_REFRESH) PlannerWidgetData.refreshAsync(context,goAsync()) }}
+    override fun onReceive(context:Context,intent:Intent) {{ super.onReceive(context,intent); if(intent.action==ACTION_REFRESH) PlannerWidgetData.refreshAsync(context,goAsync()) else if(intent.action==ACTION_TAB) {{ context.getSharedPreferences(PREFS,Context.MODE_PRIVATE).edit().putString("selected_tab",intent.getStringExtra("selected") ?: "tasks").apply(); PlannerWidgetData.updateAll(context) }} }}
 }}
 class PlannerClockWidgetProvider : AppWidgetProvider() {{
     override fun onUpdate(context:Context,manager:AppWidgetManager,ids:IntArray) = PlannerWidgetData.renderClock(context,manager,ids)
@@ -498,12 +508,12 @@ for d in ('layout','xml','drawable','values'):
 
 (res/'drawable/planner_widget_section_bg.xml').write_text('''<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle"><solid android:color="#FFFFFF"/><corners android:radius="10dp"/><stroke android:width="1dp" android:color="#E2EAE5"/></shape>''',encoding='utf-8')
 
-(res/'layout/planner_widget_overview.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:layoutDirection="rtl" android:textDirection="rtl" android:gravity="end" android:padding="14dp" android:background="@drawable/planner_widget_bg">
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layoutDirection="rtl" android:gravity="center_vertical"><TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Planner" android:gravity="start" android:textStyle="bold" android:textSize="18sp"/><TextClock android:layout_width="wrap_content" android:layout_height="wrap_content" android:format24Hour="HH:mm" android:textStyle="bold" android:textSize="20sp"/></LinearLayout>
-<TextView android:id="@+id/widget_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:textSize="14sp" android:textStyle="bold" android:paddingTop="2dp"/><TextView android:id="@+id/widget_summary" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:textStyle="bold" android:paddingTop="5dp"/>
-<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="کارهای بعدی" android:gravity="end" android:textStyle="bold" android:paddingTop="8dp"/><TextView android:id="@+id/widget_task_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/><TextView android:id="@+id/widget_task_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/><TextView android:id="@+id/widget_task_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/>
-<TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="رویدادهای بعدی" android:gravity="end" android:textStyle="bold" android:paddingTop="8dp"/><TextView android:id="@+id/widget_event_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/><TextView android:id="@+id/widget_event_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="end" android:textDirection="rtl" android:background="@drawable/planner_widget_section_bg" android:padding="7dp" android:layout_marginTop="4dp" android:maxLines="1"/>
-<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layoutDirection="rtl" android:paddingTop="8dp"><Button android:id="@+id/widget_add_event" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="+ رویداد"/><Button android:id="@+id/widget_add_task" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="+ کار"/><Button android:id="@+id/widget_refresh" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="↻"/></LinearLayout></LinearLayout>''',encoding='utf-8')
+(res/'layout/planner_widget_overview.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:layoutDirection="rtl" android:padding="10dp" android:background="@drawable/planner_widget_bg">
+<TextView android:id="@+id/widget_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="right" android:textStyle="bold" android:textSize="14sp"/>
+<TextView android:id="@+id/widget_summary" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="right"/>
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"><TextView android:id="@+id/widget_tab_tasks" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:gravity="center" android:text="کارها" android:textStyle="bold"/><TextView android:id="@+id/widget_tab_events" android:layout_width="0dp" android:layout_weight="1" android:layout_height="40dp" android:gravity="center" android:text="رویدادها" android:textStyle="bold"/></LinearLayout>
+<ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:fillViewport="false"><LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical"><TextView android:id="@+id/widget_task_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="8dp"/><TextView android:id="@+id/widget_task_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="8dp"/><TextView android:id="@+id/widget_task_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="8dp"/><TextView android:id="@+id/widget_event_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="8dp"/><TextView android:id="@+id/widget_event_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:padding="8dp"/></LinearLayout></ScrollView>
+<LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"><Button android:id="@+id/widget_add_task" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:text="+ کار"/><Button android:id="@+id/widget_add_event" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:text="+ رویداد"/><Button android:id="@+id/widget_refresh" android:layout_width="50dp" android:layout_height="48dp" android:text="↻"/></LinearLayout></LinearLayout>''',encoding='utf-8')
 
 (res/'layout/planner_widget_clock.xml').write_text('''<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/clock_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:layoutDirection="rtl" android:textDirection="rtl" android:gravity="center" android:padding="16dp" android:background="@drawable/planner_widget_bg"><TextClock android:layout_width="wrap_content" android:layout_height="wrap_content" android:format24Hour="HH:mm" android:textSize="52sp" android:textStyle="bold"/><TextView android:id="@+id/clock_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:textDirection="rtl" android:textSize="19sp" android:textStyle="bold" android:paddingTop="8dp"/><TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center" android:text="Planner" android:textSize="12sp" android:paddingTop="5dp"/></LinearLayout>''',encoding='utf-8')
 

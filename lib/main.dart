@@ -596,13 +596,21 @@ Future<DateTime?> showPersianDateTimePicker(
   );
 }
 
+String faDigits(Object? value) => (value ?? '').toString().replaceAllMapped(RegExp(r'[0-9]'), (m) => '۰۱۲۳۴۵۶۷۸۹'[int.parse(m.group(0)!)]);
+
+DateTime itemCreatedAt(dynamic x) => DateTime.tryParse((x['created_at'] ?? x['createdAt'] ?? x['updated_at'] ?? '').toString()) ?? DateTime.fromMillisecondsSinceEpoch(int.tryParse((x['id'] ?? '').toString()) ?? 0);
+
+List<dynamic> newestFirst(List<dynamic> values) => [...values]..sort((a,b) => itemCreatedAt(b).compareTo(itemCreatedAt(a)));
+
+const memberPalette = <Color>[Color(0xff2563eb),Color(0xffdc2626),Color(0xff059669),Color(0xff9333ea),Color(0xffd97706),Color(0xff0891b2),Color(0xffbe185d),Color(0xff4f46e5)];
+Color memberColor(dynamic id) { final text = (id ?? '').toString(); var hash = 0; for (final c in text.runes) { hash = (hash * 31 + c) & 0x7fffffff; } return memberPalette[hash % memberPalette.length]; }
+
 String persianDate(dynamic raw) {
   if (raw == null) return 'بدون تاریخ';
   final d = DateTime.tryParse(raw.toString())?.toLocal();
   if (d == null) return '—';
   final j = Jalali.fromDateTime(d);
-  return '${j.formatter.yyyy}/${j.formatter.mm}/${j.formatter.dd}  '
-      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+  return faDigits('${j.formatter.yyyy}/${j.formatter.mm}/${j.formatter.dd}  ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}');
 }
 
 class Home extends StatefulWidget {
@@ -930,7 +938,7 @@ class _HomeState extends State<Home> {
       context: context,
       useSafeArea: true,
       builder: (sheet) => Padding(
-        padding: const EdgeInsets.all(18),
+        padding: EdgeInsets.fromLTRB(18, 18, 18, 24 + MediaQuery.of(sheet).viewPadding.bottom),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -963,9 +971,9 @@ class _HomeState extends State<Home> {
     final openTasks = tasks.where((x) => x['status'] != 'completed').toList();
     final openEvents = events.where((x) => x['status'] != 'completed').toList();
     final pages = [
-      Today(tasks: openTasks, events: openEvents, onAct: act),
-      ItemsPage(title: 'کارها', kind: 'task', items: openTasks, onAct: act),
-      ItemsPage(title: 'رویدادها', kind: 'event', items: openEvents, onAct: act),
+      Today(tasks: openTasks, events: openEvents, onAct: act, onOpenTasks: () => setState(() => tab = 1), onOpenEvents: () => setState(() => tab = 2)),
+      ItemsPage(title: 'کارها', kind: 'task', items: newestFirst(openTasks), onAct: act),
+      ItemsPage(title: 'رویدادها', kind: 'event', items: newestFirst(openEvents), onAct: act),
       CalendarPage(tasks: openTasks, events: openEvents, onAct: act),
       const WorkspacesPage(),
       const MessagesPage(),
@@ -1007,7 +1015,7 @@ class _HomeState extends State<Home> {
               : RefreshIndicator(onRefresh: load, child: pages[tab]),
       bottomNavigationBar: SafeArea(
         top: false,
-        minimum: const EdgeInsets.only(bottom: 4),
+        minimum: const EdgeInsets.only(bottom: 12),
         child: NavigationBar(
           selectedIndex: tab,
           onDestinationSelected: (i) => setState(() => tab = i),
@@ -1032,11 +1040,15 @@ class Today extends StatelessWidget {
   final List<dynamic> tasks;
   final List<dynamic> events;
   final ActionFn onAct;
+  final VoidCallback onOpenTasks;
+  final VoidCallback onOpenEvents;
   const Today({
     super.key,
     required this.tasks,
     required this.events,
     required this.onAct,
+    required this.onOpenTasks,
+    required this.onOpenEvents,
   });
 
   @override
@@ -1053,9 +1065,9 @@ class Today extends StatelessWidget {
         const SizedBox(height: 14),
         Row(
           children: [
-            Expanded(child: Stat(title: 'کارهای باز', value: tasks.length, icon: Icons.check_circle_outline)),
+            Expanded(child: InkWell(onTap: onOpenTasks, child: Stat(title: 'کارهای باز', value: tasks.length, icon: Icons.check_circle_outline))),
             const SizedBox(width: 10),
-            Expanded(child: Stat(title: 'رویدادها', value: events.length, icon: Icons.event_outlined)),
+            Expanded(child: InkWell(onTap: onOpenEvents, child: Stat(title: 'رویدادها', value: events.length, icon: Icons.event_outlined))),
           ],
         ),
         const SizedBox(height: 18),
@@ -1092,9 +1104,9 @@ class DashboardHero extends StatelessWidget {
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         const Text('امروز', style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w700)),
         const SizedBox(height: 4),
-        Text('${j.formatter.wN} ${j.formatter.d} ${j.formatter.mN} ${j.year}', style: const TextStyle(color: Colors.white, fontSize: 23, fontWeight: FontWeight.w900)),
+        Text(faDigits('${j.formatter.wN} ${j.formatter.d} ${j.formatter.mN} ${j.year}'), style: const TextStyle(color: Colors.white, fontSize: 23, fontWeight: FontWeight.w900)),
         const SizedBox(height: 14),
-        Text('$taskCount کار باز  •  $eventCount رویداد پیش‌رو', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
+        Text(faDigits('$taskCount کار باز  •  $eventCount رویداد پیش‌رو'), style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600)),
       ]),
     );
   }
@@ -1117,7 +1129,7 @@ class Stat extends StatelessWidget {
             ),
             const SizedBox(width: 11),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('$value', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
+              Text(faDigits(value), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w900)),
               Text(title, style: Theme.of(context).textTheme.bodySmall),
             ])),
           ]),
@@ -1156,7 +1168,7 @@ class _ItemsPageState extends State<ItemsPage> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               IconButton(onPressed: page > 0 ? () => setState(() => page--) : null, icon: const Icon(Icons.chevron_right)),
-              Text('صفحه ${page + 1} از $pages'),
+              Text(faDigits('صفحه ${page + 1} از $pages')),
               IconButton(onPressed: page < pages - 1 ? () => setState(() => page++) : null, icon: const Icon(Icons.chevron_left)),
             ],
           ),
@@ -1643,7 +1655,7 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
   Future<void> addMember(dynamic user) async {
     try {
       await Api.call('/workspaces/${widget.workspaceId}/members', method: 'POST', body: {
-        'user_id': user['id'], 'role': 'editor', 'color': user['color'] ?? '#16A34A',
+        'user_id': user['id'], 'role': 'editor', 'color': '#${memberColor(user['id']).toARGB32().toRadixString(16).substring(2)}',
       });
       memberSearch.clear();
       if (mounted) setState(() => foundUsers = []);
@@ -1828,7 +1840,7 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
                 const SizedBox(height: 10),
                 ...((detail?['members'] ?? []) as List).map((m) => ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: CircleAvatar(child: Text((m['name'] ?? 'U').toString().isEmpty ? 'U' : (m['name'] ?? 'U').toString().substring(0, 1))),
+                  leading: CircleAvatar(backgroundColor: memberColor(m['user_id']), foregroundColor: Colors.white, child: Text((m['name'] ?? 'U').toString().isEmpty ? 'U' : (m['name'] ?? 'U').toString().substring(0, 1))),
                   title: Text(m['name'] ?? 'کاربر'),
                   subtitle: Text('${m['email'] ?? ''} • ${m['role'] ?? 'editor'}'),
                   trailing: m['role'] == 'owner' ? const Icon(Icons.workspace_premium) : IconButton(onPressed: () => chatWith(m), icon: const Icon(Icons.chat_bubble_outline)),
@@ -1858,7 +1870,7 @@ class _WorkspaceDetailPageState extends State<WorkspaceDetailPage> {
               child: CheckboxListTile(
                 value: item['status'] == 'completed',
                 onChanged: _canEdit ? (_) => toggleSharedItem(item) : null,
-                secondary: Icon(item['kind'] == 'event' ? Icons.event_outlined : Icons.check_circle_outline),
+                secondary: Icon(item['kind'] == 'event' ? Icons.event_outlined : Icons.check_circle_outline, color: memberColor(item['assignee_user_id'])),
                 title: Text(
                   item['title'] ?? '',
                   style: TextStyle(decoration: item['status'] == 'completed' ? TextDecoration.lineThrough : null),
